@@ -1,10 +1,13 @@
-<script>
-// ===== DATA SOURCE (Apps Script returns JSON) =====
-window.JSON_URL = "https://script.google.com/macros/s/AKfycbwsvBV8yNbAzvaapA4H_WkFPC6PmALh4f8ohg8mXmx81CJ_81sAS5uJGQ3uQ7CHgLr1Iw/exec";
+/***********************
+ * config.js
+ * Place your settings here
+ ***********************/
 
-// (No CSV needed; your script already returns JSON)
+// Use your working Apps Script JSON link
+window.JSON_URL = "https://script.googleusercontent.com/macros/echo?user_content_key=AehSKLg3IaDlXfPa1...&lib=..."; 
 
-// ===== IMAGES =====
-window.IMAGES_BASE = "./public/images/";  // filenames must equal ItemCode (col F)
-window.IMAGE_EXTS  = [".webp", ".jpg", ".png"];
-</script>
+// (optional) base path for item pictures
+window.IMAGES_BASE = "./public/images/";
+
+// (optional) try extensions in order
+window.IMAGE_EXTS = [".webp", ".jpg", ".png"];
