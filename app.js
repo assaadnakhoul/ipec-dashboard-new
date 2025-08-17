@@ -1,21 +1,19 @@
 /***********************
- * IPEC Dashboard — bigger thumbs, centered KPIs, 20 visible, month filter + trend
+ * IPEC Dashboard — collapsible Top Clients + shorter Best Sellers
  * Uses window.JSON_URLS (array) from config.js
  ***********************/
 const log = (...a)=>{console.log(...a); const el=document.getElementById("diag-log"); if(el){el.textContent+=a.map(x=>typeof x==='string'?x:JSON.stringify(x,null,2)).join(" ")+"\n";}};
 const fmtMoney = n => (n??0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtInt   = n => (n??0).toLocaleString();
 
-// Parse numbers robustly
 function num(x){ if(x==null) return 0; let s=String(x).trim().replace(/[^\d.,-]/g,"");
   if(s.includes(",")&&s.includes(".")){ if(s.lastIndexOf(".")>s.lastIndexOf(",")) s=s.replace(/,/g,""); else s=s.replace(/\./g,"").replace(",",".");}
   else if(s.includes(",")&&!s.includes(".")) s=s.replace(",","."); else s=s.replace(/,/g,"");
   const n=Number(s); return isNaN(n)?0:n;
 }
-
 const typeLabel = t => (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":(String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
 
-// Image HTML with fallbacks
+// Images with fallback
 function imgHTML(code, alt=""){
   const base = window.IMAGES_BASE || "./public/images/";
   const exts = window.IMAGE_EXTS || [".webp",".jpg",".png"];
@@ -45,34 +43,28 @@ async function fetchDataJSON(){
   throw lastErr || new Error("All JSON sources failed");
 }
 
-// Date parser (column O) — tries several common keys & formats
+// Date parsing (column O)
 function parseDateAny(v){
   if(!v) return null;
-  // Accept Date object, ISO strings, dd/mm/yyyy, mm/dd/yyyy
   if (v instanceof Date) return isNaN(v) ? null : v;
   let s = String(v).trim();
-  // Excel serialized number?
-  if (/^\d+(\.\d+)?$/.test(s)) {
+  if (/^\d+(\.\d+)?$/.test(s)) { // Excel serial
     const serial = Number(s);
-    // Excel serial date (assuming 1900 system)
     const base = new Date(Date.UTC(1899,11,30));
-    const ms = serial * 86400000;
-    const d = new Date(base.getTime()+ms);
+    const d = new Date(base.getTime() + serial*86400000);
     return isNaN(d) ? null : d;
   }
-  // Replace '-' with '/' for Date.parse leniency
-  s = s.replace(/-/g,'/');
+  s = s.replace(/-/g,'/'); // be lenient
   const d = new Date(s);
   return isNaN(d) ? null : d;
 }
 
-// Normalize to canonical record
+// Normalize all rows
 function normalize(rows){
   return rows.map(r=>{
     const qty=num(r.Qty), unit=num(r.UnitPrice);
     const line = r.LineTotal!==undefined && r.LineTotal!=="" ? num(r.LineTotal) : qty*unit;
     const invoice = r.InvoicePath || r.Invoice || r.InvoiceFile || "";
-    // Column O → try several likely keys for "Date" coming from that column
     const invDateRaw = r["Date"] ?? r["InvoiceDate"] ?? r["Invoice Date"] ?? r["InvDate"] ?? r["O"] ?? r["date"];
     const invDate = parseDateAny(invDateRaw);
     const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : ""; // YYYY-MM
@@ -100,7 +92,7 @@ function applyFilters(all){
   const type = document.querySelector('input[name="type"]:checked').value;
   const cat = document.getElementById("filter-category").value;
   const sub = document.getElementById("filter-subcat").value;
-  const month = document.getElementById("filter-month").value; // YYYY-MM or ""
+  const month = document.getElementById("filter-month").value;
   return all.filter(r=>{
     if(type!=="ALL" && r.type!==type) return false;
     if(cat && r.category!==cat) return false;
@@ -116,7 +108,7 @@ function aggregate(all){
   const totalQty = all.reduce((s,r)=>s+(r.qty||0),0);
   const avg = invoices ? turnover/invoices : 0;
 
-  // Top clients by value (A/B) and by count of invoices (A/B) — count unique invoices per phone.
+  // Top clients: by value and by count (phone→unique invoice count)
   const valA={}, valB={}, cntA={}, cntB={};
   const seenA=new Map(), seenB=new Map(); // phone -> Set(invoices)
   all.forEach(r=>{
@@ -130,7 +122,6 @@ function aggregate(all){
       if(r.phone){ if(!seenB.has(r.phone)) seenB.set(r.phone,new Set()); seenB.get(r.phone).add(r.invoice); }
     }
   });
-  // phone -> client (first seen)
   const ph2cA=new Map(), ph2cB=new Map();
   all.forEach(r=>{
     if(r.type==="A" && r.phone && !ph2cA.has(r.phone)) ph2cA.set(r.phone, r.client||r.phone);
@@ -155,9 +146,8 @@ function aggregate(all){
   const bestVal = Object.entries(byVal).sort((x,y)=>y[1]-x[1]).slice(0,20).map(([code,val])=>({code,val,...meta[code]}));
   const bestQty = Object.entries(byQty).sort((x,y)=>y[1]-x[1]).slice(0,20).map(([code,qty])=>({code,qty,...meta[code]}));
 
-  // Monthly series for trend (YYYY-MM -> sum)
-  const monthly = {};
-  all.forEach(r=>{ if(!r.ym) return; monthly[r.ym]=(monthly[r.ym]||0)+r.line; });
+  // Monthly trend
+  const monthly = {}; all.forEach(r=>{ if(!r.ym) return; monthly[r.ym]=(monthly[r.ym]||0)+r.line; });
   const months = Object.keys(monthly).sort();
 
   return { invoices, turnover, totalQty, avg,
@@ -179,7 +169,6 @@ function renderKPIs(a){
   document.getElementById("kpi-qty").textContent=fmtInt(a.totalQty);
   document.getElementById("kpi-avg").textContent=fmtMoney(a.avg);
 }
-
 function setPillset(el, mode){ el.querySelectorAll(".pill").forEach(b=>b.setAttribute("aria-pressed", b.dataset.mode===mode ? "true":"false")); }
 
 function renderTopClients(el, list, mode){
@@ -192,7 +181,6 @@ function renderTopClients(el, list, mode){
     el.appendChild(li);
   });
 }
-
 function renderBestItems(el, list, mode){
   el.innerHTML="";
   list.forEach((it,i)=>{
@@ -214,14 +202,24 @@ function renderTrend(months, monthly){
   const labels = months;
   const data = months.map(m=>monthly[m]||0);
   const ctx = document.getElementById("trendChart").getContext("2d");
-  if (trendChart) { trendChart.destroy(); }
+  if (trendChart) trendChart.destroy();
   trendChart = new Chart(ctx, {
     type: "line",
     data: { labels, datasets: [{ label: "Turnover", data, tension: 0.25 }] },
-    options: {
-      plugins:{ legend:{ display:false } },
-      scales:{ x:{ ticks:{ maxRotation:0 } }, y:{ beginAtZero:true } }
-    }
+    options: { plugins:{legend:{display:false}}, scales:{ x:{ticks:{maxRotation:0}}, y:{beginAtZero:true} } }
+  });
+}
+
+// Collapsible cards
+function wireCollapsibles(){
+  document.querySelectorAll('.toggle[data-target]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id=btn.getAttribute('data-target');
+      const card=document.getElementById(id);
+      if(!card) return;
+      const collapsed = card.classList.toggle('collapsed');
+      btn.textContent = collapsed ? 'Expand' : 'Minimize';
+    });
   });
 }
 
@@ -270,6 +268,7 @@ async function main(){
       const b=e.target.closest(".pill"); if(!b) return; state.items=b.dataset.mode; recomputeAndRender();
     });
 
+    wireCollapsibles();
     recomputeAndRender();
   }catch(err){
     log("FATAL:", String(err));

@@ -17,9 +17,9 @@
     .row{display:grid;gap:16px}
     .card{background:var(--card-bg);border:1px solid var(--card-br);border-radius:16px;padding:16px}
     .kpis{grid-template-columns:repeat(4,1fr)}
-    .kpi{ text-align:center; }
+    .kpi{text-align:center}
     .kpi .label{font-size:13px;color:var(--muted)}
-    .kpi .num{font-size:44px;font-weight:800;line-height:1.05;letter-spacing:-.3px} /* smaller + centered */
+    .kpi .num{font-size:44px;font-weight:800;line-height:1.05;letter-spacing:-.3px}
     .filters{grid-template-columns:repeat(4,1fr)}
     .rset{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .sel{padding:10px 12px;border:1px solid var(--card-br);border-radius:12px;font-size:14px;background:white}
@@ -28,16 +28,23 @@
     .pill[aria-pressed="true"]{background:#fff;border:1px solid var(--card-br)}
     .tiny{font-size:12px;color:var(--muted)}
     .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-    .list{max-height:none;overflow:visible} /* show all 20 */
+    .list{max-height:none;overflow:visible}
     .li{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--card-br)}
     .li:last-child{border-bottom:0}
-    .thumb{width:80px;height:80px;flex:0 0 80px;border-radius:12px;border:1px solid var(--card-br);object-fit:contain;background:#fff} /* fit neatly */
+    .thumb{width:80px;height:80px;flex:0 0 80px;border-radius:12px;border:1px solid var(--card-br);object-fit:contain;background:#fff}
     .grow{min-width:0;flex:1}
     .name{font-weight:600}
     .muted{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .value{margin-left:auto;font-weight:700}
     .badges{display:flex;gap:8px}
     .badge{display:inline-flex;align-items:center;gap:6px;background:#eef2ff;color:#1e40af;border-radius:999px;padding:6px 10px;font-size:12px}
+
+    /* --- collapsible cards --- */
+    .section-title .toggle{border:1px solid var(--card-br);background:#fff;font-size:12px;padding:6px 10px;border-radius:999px;cursor:pointer}
+    .card.collapsed .body{display:none}
+
+    /* Best Sellers: same width as Top Clients + shorter with scroll */
+    .list.scroll{max-height:360px;overflow:auto}
   </style>
 </head>
 <body>
@@ -61,7 +68,7 @@
       <div class="card kpi"><div class="label">Average Basket</div><div id="kpi-avg" class="num">—</div></div>
     </section>
 
-    <!-- Filters (search removed) -->
+    <!-- Filters -->
     <section class="row filters" style="margin-top:16px">
       <div class="card">
         <div class="label">Type</div>
@@ -87,32 +94,42 @@
 
     <!-- Top Clients -->
     <section class="row" style="grid-template-columns:1fr 1fr; margin-top:16px">
-      <div class="card">
+      <div class="card" data-collapsible id="card-topA">
         <div class="section-title">
           <div><strong>Top Clients — INVOICE OUT</strong> <span class="tiny">(top 20)</span></div>
-          <div class="pillset" id="clientsModeA">
-            <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-            <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
+          <div class="right" style="display:flex;gap:12px;align-items:center">
+            <div class="pillset" id="clientsModeA">
+              <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
+              <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
+            </div>
+            <button class="toggle" data-target="card-topA">Minimize</button>
           </div>
         </div>
-        <ol id="list-topA" class="list"></ol>
+        <div class="body">
+          <ol id="list-topA" class="list scroll"></ol>
+        </div>
       </div>
 
-      <div class="card">
+      <div class="card" data-collapsible id="card-topB">
         <div class="section-title">
           <div><strong>Top Clients — INVOICE IN</strong> <span class="tiny">(top 20)</span></div>
-          <div class="pillset" id="clientsModeB">
-            <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-            <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
+          <div class="right" style="display:flex;gap:12px;align-items:center">
+            <div class="pillset" id="clientsModeB">
+              <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
+              <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
+            </div>
+            <button class="toggle" data-target="card-topB">Minimize</button>
           </div>
         </div>
-        <ol id="list-topB" class="list"></ol>
+        <div class="body">
+          <ol id="list-topB" class="list scroll"></ol>
+        </div>
       </div>
     </section>
 
-    <!-- Best Sellers -->
-    <section class="row" style="grid-template-columns:1fr; margin-top:16px">
-      <div class="card">
+    <!-- Best Sellers + Trend (half/half) -->
+    <section class="row" style="grid-template-columns:1fr 1fr; margin-top:16px">
+      <div class="card" id="card-best">
         <div class="section-title">
           <div><strong>Best Sellers (top 20)</strong></div>
           <div class="pillset" id="itemsMode">
@@ -120,12 +137,9 @@
             <button class="pill" data-mode="qty" aria-pressed="false">By Qty</button>
           </div>
         </div>
-        <ul id="list-items" class="list"></ul>
+        <ul id="list-items" class="list scroll"></ul>
       </div>
-    </section>
 
-    <!-- Trends -->
-    <section class="row" style="grid-template-columns:1fr; margin-top:16px">
       <div class="card">
         <div class="section-title">
           <strong>Monthly Turnover Trend</strong>
@@ -144,10 +158,10 @@
     </section>
   </div>
 
-  <!-- Chart.js for trends -->
+  <!-- Chart.js for trend -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
-  <script src="config.js?v=21"></script>
-  <script src="app.js?v=21"></script>
+  <script src="config.js?v=30"></script>
+  <script src="app.js?v=30"></script>
 </body>
 </html>
