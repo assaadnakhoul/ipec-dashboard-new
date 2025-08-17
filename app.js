@@ -1,9 +1,17 @@
-/***********************
- * IPEC Dashboard — compact Best Sellers + Supplier filter
- ***********************/
+/****************************************************
+ * IPEC Sales Dashboard — full app.js
+ * - Loads JSON from Apps Script
+ * - Normalizes rows
+ * - Builds filters (Type, Category, Sub-category, Month, Supplier)
+ * - Renders KPIs, Top Clients, Best Sellers, Trend
+ * - NEW: dynamic "grand total" and Turnover % of Total KPI
+ ****************************************************/
+
+// ---------- utils ----------
 const log = (...a)=>{console.log(...a); const el=document.getElementById("diag-log"); if(el){el.textContent+=a.map(x=>typeof x==='string'?x:JSON.stringify(x,null,2)).join(" ")+"\n";}};
 const fmtMoney = n => (n??0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtInt   = n => (n??0).toLocaleString();
+
 function num(x){ if(x==null) return 0; let s=String(x).trim().replace(/[^\d.,-]/g,"");
   if(s.includes(",")&&s.includes(".")){ if(s.lastIndexOf(".")>s.lastIndexOf(",")) s=s.replace(/,/g,""); else s=s.replace(/\./g,"").replace(",",".");}
   else if(s.includes(",")&&!s.includes(".")) s=s.replace(",","."); else s=s.replace(/,/g,"");
@@ -11,6 +19,7 @@ function num(x){ if(x==null) return 0; let s=String(x).trim().replace(/[^\d.,-]/
 }
 const typeLabel = t => (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":(String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
 
+// images with fallback
 function imgHTML(code, alt=""){
   const base = window.IMAGES_BASE || "./public/images/";
   const exts = window.IMAGE_EXTS || [".webp",".jpg",".png"];
@@ -20,6 +29,7 @@ function imgHTML(code, alt=""){
   return `<img class="thumb" src="${first}" onerror="${onerr}" alt="${alt}">`;
 }
 
+// ---------- data loading ----------
 async function fetchDataJSON(){
   if(!window.JSON_URLS || !window.JSON_URLS.length) throw new Error("No JSON_URLS configured (check config.js)");
   let lastErr;
@@ -39,7 +49,7 @@ async function fetchDataJSON(){
   throw lastErr || new Error("All JSON sources failed");
 }
 
-// Date parsing (column O)
+// ---------- normalization ----------
 function parseDateAny(v){
   if(!v) return null;
   if (v instanceof Date) return isNaN(v) ? null : v;
@@ -48,7 +58,6 @@ function parseDateAny(v){
   s=s.replace(/-/g,'/'); const d=new Date(s); return isNaN(d)?null:d;
 }
 
-// Normalize rows
 function normalize(rows){
   return rows.map(r=>{
     const qty=num(r.Qty), unit=num(r.UnitPrice);
@@ -67,7 +76,7 @@ function normalize(rows){
       code: String(r.ItemCode||"").trim().toUpperCase().replace(/\s+/g,""),
       desc: r["Product/Description"] || r.ProductDescription || r.Description || "",
       qty, unit, line, invTotal: num(r.InvoiceTotal),
-      supplier: r.Supplier || "",                     // ⇦ Supplier (col L)
+      supplier: r.Supplier || "",
       category: r.Category || "",
       subcat: r["Sub-category"] || r.Subcategory || "",
       invDate, ym
@@ -77,22 +86,41 @@ function normalize(rows){
 
 const uniqSorted = a => Array.from(new Set(a.filter(Boolean))).sort((x,y)=>x.localeCompare(y));
 
+// ---------- filters ----------
 function applyFilters(all){
   const type = document.querySelector('input[name="type"]:checked').value;
   const cat = document.getElementById("filter-category").value;
   const sub = document.getElementById("filter-subcat").value;
   const month = document.getElementById("filter-month").value;
-  const supplier = document.getElementById("filter-supplier").value;   // ⇦ new
+  const supplier = document.getElementById("filter-supplier").value;
   return all.filter(r=>{
     if(type!=="ALL" && r.type!==type) return false;
     if(cat && r.category!==cat) return false;
     if(sub && r.subcat!==sub) return false;
     if(month && r.ym!==month) return false;
-    if(supplier && r.supplier!==supplier) return false;                // ⇦ new
+    if(supplier && r.supplier!==supplier) return false;
     return true;
   });
 }
 
+function buildFilters(all){
+  const cats=uniqSorted(all.map(r=>r.category));
+  const subs=uniqSorted(all.map(r=>r.subcat));
+  const months=uniqSorted(all.map(r=>r.ym));
+  const sups=uniqSorted(all.map(r=>r.supplier));
+
+  const catSel=document.getElementById("filter-category");
+  const subSel=document.getElementById("filter-subcat");
+  const mSel=document.getElementById("filter-month");
+  const supSel=document.getElementById("filter-supplier");
+
+  cats.forEach(c=>{const o=document.createElement("option"); o.value=c; o.textContent=c; catSel.appendChild(o);});
+  subs.forEach(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; subSel.appendChild(o);});
+  months.forEach(m=>{ if(!m) return; const o=document.createElement("option"); o.value=m; o.textContent=m; mSel.appendChild(o);});
+  sups.forEach(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; supSel.appendChild(o);});
+}
+
+// ---------- aggregation ----------
 function aggregate(all){
   const invoices = new Set(all.map(r=>r.invoice).filter(Boolean)).size;
   const turnover = all.reduce((s,r)=>s+(r.line||0),0);
@@ -146,35 +174,19 @@ function aggregate(all){
            bestVal, bestQty, months, monthly };
 }
 
-function buildFilters(all){
-  const cats=uniqSorted(all.map(r=>r.category));
-  const subs=uniqSorted(all.map(r=>r.subcat));
-  const months=uniqSorted(all.map(r=>r.ym));
-  const sups=uniqSorted(all.map(r=>r.supplier));          // ⇦ suppliers
-
-  const catSel=document.getElementById("filter-category");
-  const subSel=document.getElementById("filter-subcat");
-  const mSel=document.getElementById("filter-month");
-  const supSel=document.getElementById("filter-supplier");
-
-  cats.forEach(c=>{const o=document.createElement("option"); o.value=c; o.textContent=c; catSel.appendChild(o);});
-  subs.forEach(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; subSel.appendChild(o);});
-  months.forEach(m=>{ if(!m) return; const o=document.createElement("option"); o.value=m; o.textContent=m; mSel.appendChild(o);});
-  sups.forEach(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; supSel.appendChild(o);}); // ⇦
-}
-
-function renderKPIs(a){
+// ---------- renderers ----------
+function renderKPIs(a, grand){
   document.getElementById("kpi-turnover").textContent=fmtMoney(a.turnover);
   document.getElementById("kpi-invoices").textContent=fmtInt(a.invoices);
   document.getElementById("kpi-qty").textContent=fmtInt(a.totalQty);
   document.getElementById("kpi-avg").textContent=fmtMoney(a.avg);
-  // --- Turnover % of Total ---
-const currentTurnover = parseFloat(document.getElementById("kpi-turnover").textContent.replace(/,/g, "")) || 0;
-const totalTurnoverAll = 561104.6;  // <-- replace with dynamic "grand total" if you have it
-const percent = totalTurnoverAll > 0 ? (currentTurnover / totalTurnoverAll) * 100 : 0;
-document.getElementById("kpi-turnover-percent").textContent = percent.toFixed(1) + "%";
 
+  // NEW: Turnover % of Total (grand from ALL rows)
+  const pct = grand && grand.turnover>0 ? (a.turnover / grand.turnover) * 100 : 0;
+  const el = document.getElementById("kpi-turnover-percent");
+  if (el) el.textContent = pct.toFixed(1) + "%";
 }
+
 function setPillset(el, mode){ el.querySelectorAll(".pill").forEach(b=>b.setAttribute("aria-pressed", b.dataset.mode===mode ? "true":"false")); }
 
 function renderTopClients(el, list, mode){
@@ -202,6 +214,7 @@ function renderBestItems(el, list, mode){
   });
 }
 
+// Trend chart
 let trendChart;
 function renderTrend(months, monthly){
   const labels = months;
@@ -215,7 +228,7 @@ function renderTrend(months, monthly){
   });
 }
 
-// Collapsible Top Clients
+// ---------- wire collapsible ----------
 function wireCollapsibles(){
   document.querySelectorAll('.toggle[data-target]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -228,20 +241,27 @@ function wireCollapsibles(){
   });
 }
 
+// ---------- main ----------
 async function main(){
   try{
     const raw = await fetchDataJSON();
     const all = normalize(raw);
     document.getElementById("badge-total-rows").textContent = `${all.length} rows`;
+
+    // Build filters, compute GRAND totals (no filters)
     buildFilters(all);
+    const grand = aggregate(all); // <-- dynamic grand totals for entire dataset
 
     const state = { clientsA:"value", clientsB:"value", items:"value" };
 
     function recomputeAndRender(){
       const filtered = applyFilters(all);
       const agg = aggregate(filtered);
-      renderKPIs(agg);
 
+      // KPIs (includes the new percentage KPI)
+      renderKPIs(agg, grand);
+
+      // Top clients
       setPillset(document.getElementById("clientsModeA"), state.clientsA);
       setPillset(document.getElementById("clientsModeB"), state.clientsB);
       renderTopClients(document.getElementById("list-topA"),
@@ -249,19 +269,20 @@ async function main(){
       renderTopClients(document.getElementById("list-topB"),
         state.clientsB==="value" ? agg.topB_value : agg.topB_count, state.clientsB);
 
+      // Best items
       setPillset(document.getElementById("itemsMode"), state.items);
       renderBestItems(document.getElementById("list-items"),
         state.items==="value" ? agg.bestVal : agg.bestQty, state.items);
 
+      // Trend
       renderTrend(agg.months, agg.monthly);
     }
 
-    // Filters
+    // Filter events
     document.querySelectorAll('input[name="type"]').forEach(r=>r.addEventListener("change", recomputeAndRender));
-    document.getElementById("filter-category").addEventListener("change", recomputeAndRender);
-    document.getElementById("filter-subcat").addEventListener("change", recomputeAndRender);
-    document.getElementById("filter-month").addEventListener("change", recomputeAndRender);
-    document.getElementById("filter-supplier").addEventListener("change", recomputeAndRender); // ⇦ new
+    ["filter-category","filter-subcat","filter-month","filter-supplier"].forEach(id=>{
+      document.getElementById(id).addEventListener("change", recomputeAndRender);
+    });
 
     // Mode toggles
     document.getElementById("clientsModeA").addEventListener("click", e=>{

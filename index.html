@@ -20,23 +20,19 @@
 
     /* KPIs */
     .kpis{grid-template-columns:repeat(4,1fr)}
+    .kpis.kpis-extra{grid-template-columns:repeat(1,1fr)} /* 2nd row is one card */
     .kpi{text-align:center}
     .kpi .label{font-size:13px;color:var(--muted)}
     .kpi .num{font-size:44px;font-weight:800;line-height:1.05;letter-spacing:-.3px}
 
     /* Filters */
     .filters{grid-template-columns:repeat(5,1fr)}
-    .row.filters .card{
-      height:170px;            /* ← set your exact height */
-      display:flex;
-      flex-direction:column;
-      justify-content:center;
-    }
+    .row.filters .card{height:150px;display:flex;flex-direction:column;justify-content:center}
     .row.filters .sel{width:100%}
     .rset{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .sel{padding:10px 12px;border:1px solid var(--card-br);border-radius:12px;font-size:14px;background:#fff}
 
-    /* Pills / lists */
+    /* Lists / pills */
     .pillset{display:inline-flex;background:#f1f3f5;border-radius:999px;padding:3px;gap:3px}
     .pill{border:0;background:transparent;padding:8px 14px;border-radius:999px;font-size:14px;cursor:pointer}
     .pill[aria-pressed="true"]{background:#fff;border:1px solid var(--card-br)}
@@ -44,8 +40,7 @@
     .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 
     .list{max-height:none;overflow:visible}
-    .list.scroll{max-height:200px;overflow:auto} /* default compact lists */
-
+    .list.scroll{max-height:200px;overflow:auto}
     .li{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--card-br)}
     .li:last-child{border-bottom:0}
     .thumb{width:64px;height:64px;flex:0 0 64px;border-radius:12px;border:1px solid var(--card-br);object-fit:contain;background:#fff}
@@ -57,21 +52,12 @@
     .badges{display:flex;gap:8px}
     .badge{display:inline-flex;align-items:center;gap:6px;background:#eef2ff;color:#1e40af;border-radius:999px;padding:6px 10px;font-size:12px}
 
-    /* collapsible Top Clients */
     .section-title .toggle{border:1px solid var(--card-br);background:#fff;font-size:12px;padding:6px 10px;border-radius:999px;cursor:pointer}
     .card.collapsed .body{display:none}
 
-    /* ↑ Best Sellers card: make the WHOLE card taller and let the list fill it */
-    #card-best{
-      height:500px;           /* ← adjust to show more items */
-      display:flex;
-      flex-direction:column;
-    }
-    #card-best .list.scroll{
-      flex:1;                 /* list grows to fill remaining space */
-      max-height:none;        /* remove earlier 200px limit for this card only */
-      overflow:auto;
-    }
+    /* Best Sellers card: taller */
+    #card-best{height:500px;display:flex;flex-direction:column}
+    #card-best .list.scroll{flex:1;max-height:none;overflow:auto}
   </style>
 </head>
 <body>
@@ -87,18 +73,23 @@
       </div>
     </header>
 
-    <!-- KPIs -->
+    <!-- KPIs (row 1) -->
     <section class="row kpis">
       <div class="card kpi"><div class="label">Total Turnover</div><div id="kpi-turnover" class="num">—</div></div>
       <div class="card kpi"><div class="label">Invoices</div><div id="kpi-invoices" class="num">—</div></div>
       <div class="card kpi"><div class="label">Total Qty</div><div id="kpi-qty" class="num">—</div></div>
       <div class="card kpi"><div class="label">Average Basket</div><div id="kpi-avg" class="num">—</div></div>
-    <section class="row kpis" style="margin-top:16px">
-  <div class="card kpi"><div class="label">Turnover % of Total</div><div id="kpi-turnover-percent" class="num">—%</div></div>
-</section>
+    </section>
 
+    <!-- KPI (row 2): Turnover % of Total -->
+    <section class="row kpis kpis-extra" style="margin-top:12px">
+      <div class="card kpi">
+        <div class="label">Turnover % of Total</div>
+        <div id="kpi-turnover-percent" class="num">—%</div>
+      </div>
+    </section>
 
-    <!-- Filters (added Supplier) -->
+    <!-- Filters -->
     <section class="row filters" style="margin-top:16px">
       <div class="card">
         <div class="label">Type</div>
@@ -151,6 +142,7 @@
               <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
               <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
             </div>
+            <button class="toggle" data-target="card-topB">Minimize</button>
           </div>
         </div>
         <div class="body">
@@ -159,7 +151,7 @@
       </div>
     </section>
 
-    <!-- Best-Sellers stacked above Trend -->
+    <!-- Best Sellers -->
     <section style="margin-top:16px">
       <div class="card" id="card-best">
         <div class="section-title">
@@ -173,6 +165,7 @@
       </div>
     </section>
 
+    <!-- Trend -->
     <section style="margin-top:16px">
       <div class="card">
         <div class="section-title">
@@ -193,7 +186,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="config.js?v=40"></script>
-  <script src="app.js?v=40"></script>
+  <script src="config.js?v=50"></script>
+  <script src="app.js?v=50"></script>
 </body>
 </html>
