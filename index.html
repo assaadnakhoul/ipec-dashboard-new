@@ -23,7 +23,7 @@
     .filters{grid-template-columns:repeat(5,1fr)}
     /* make all filter cards (Type, Category, Sub-category, Month, Supplier) same height */
 .row.filters .card{
-  height: 120px;              /* <- set the exact height you want */
+  height: 150px;              /* <- set the exact height you want */
   display: flex;
   flex-direction: column;
   justify-content: center;    /* centers radio/select vertically */
@@ -113,7 +113,6 @@
               <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
               <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
             </div>
-            <button class="toggle" data-target="card-topA">Minimize</button>
           </div>
         </div>
         <div class="body">
@@ -140,18 +139,17 @@
 
   
     <!-- Best-Sellers stacked above Trend -->
-<section style="margin-top:40px">
-  <div class="card" id="card-best">
-    <div class="section-title">
-      <div><strong>Best Sellers (top 20)</strong></div>
-      <div class="pills" id="itemsMode">
-        <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-        <button class="pill" data-mode="qty" aria-pressed="false">By Qty</button>
-      </div>
-    </div>
-    <ul id="list-items" class="list scroll"></ul>
-  </div>
-</section>
+#card-best {
+  height: 500px;    /* increase card height */
+  display: flex;
+  flex-direction: column;
+}
+
+#card-best .list.scroll {
+  flex: 1;          /* list grows to fill available space */
+  max-height: none; /* remove the previous limit */
+}
+
 
 <section style="margin-top:16px">
   <div class="card">
