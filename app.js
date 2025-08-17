@@ -68,14 +68,20 @@ const log = (...args)=> {
 };
 
 // ---------- data loading ----------
-async function fetchCSV(url){
-  return new Promise((resolve, reject)=>{
-    Papa.parse(url, {
-      download:true, header:false, dynamicTyping:false,
-      complete:(res)=> resolve(res.data), error:reject
+async function fetchCSVText(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  const txt = await r.text();
+  return new Promise((resolve, reject) => {
+    Papa.parse(txt, {
+      header: false,
+      dynamicTyping: false,
+      complete: res => resolve(res.data),
+      error: reject
     });
   });
 }
+
 async function tryAppsScriptCSV(){
   log("Trying Apps Script CSV:", window.CSV_URL);
   const rows = await fetchCSV(window.CSV_URL);
@@ -96,16 +102,38 @@ async function tryPublishCSV(){
 }
 
 async function loadMatrixAndMap(){
+  async function loadMatrixAndMap() {
   // 1) Apps Script CSV → matrix
   try {
-    const m = await tryAppsScriptCSV();
+    log("Trying Apps Script CSV:", window.CSV_URL);
+    const m = await fetchCSVText(window.CSV_URL);
     if (!m || m.length === 0) throw new Error("Empty CSV matrix");
     document.getElementById("badge-source").textContent = "Apps Script CSV";
-    // First row = header
     const headers = m[0];
     const map = mapHeaders(headers);
     return { headers, map, data: m.slice(1) };
-  } catch (e) { log("Apps Script CSV failed:", String(e)); }
+  } catch (e) {
+    log("Apps Script CSV failed:", String(e));
+  }
+
+  // 2) Publish-to-Web CSV fallback (optional)
+  if (window.PUBLISH_CSV_URL) {
+    try {
+      log("Trying Publish-to-Web CSV:", window.PUBLISH_CSV_URL);
+      const m = await fetchCSVText(window.PUBLISH_CSV_URL);
+      if (!m || m.length === 0) throw new Error("Empty publish CSV");
+      document.getElementById("badge-source").textContent = "Publish-to-Web CSV";
+      const headers = m[0];
+      const map = mapHeaders(headers);
+      return { headers, map, data: m.slice(1) };
+    } catch (e) {
+      log("Publish CSV failed:", String(e));
+    }
+  }
+
+  throw new Error("No data source succeeded; check IDs, access, or that the tab has rows.");
+}
+
 
   // 2) Apps Script JSON → array of objects (we’ll recompose headers)
   try {
