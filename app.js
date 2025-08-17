@@ -168,6 +168,12 @@ function renderKPIs(a){
   document.getElementById("kpi-invoices").textContent=fmtInt(a.invoices);
   document.getElementById("kpi-qty").textContent=fmtInt(a.totalQty);
   document.getElementById("kpi-avg").textContent=fmtMoney(a.avg);
+  // --- Turnover % of Total ---
+const currentTurnover = parseFloat(document.getElementById("kpi-turnover").textContent.replace(/,/g, "")) || 0;
+const totalTurnoverAll = 561104.6;  // <-- replace with dynamic "grand total" if you have it
+const percent = totalTurnoverAll > 0 ? (currentTurnover / totalTurnoverAll) * 100 : 0;
+document.getElementById("kpi-turnover-percent").textContent = percent.toFixed(1) + "%";
+
 }
 function setPillset(el, mode){ el.querySelectorAll(".pill").forEach(b=>b.setAttribute("aria-pressed", b.dataset.mode===mode ? "true":"false")); }
 
