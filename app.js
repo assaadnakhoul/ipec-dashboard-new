@@ -1,11 +1,9 @@
 /***********************
- * IPEC Dashboard — collapsible Top Clients + shorter Best Sellers
- * Uses window.JSON_URLS (array) from config.js
+ * IPEC Dashboard — compact Best Sellers + Supplier filter
  ***********************/
 const log = (...a)=>{console.log(...a); const el=document.getElementById("diag-log"); if(el){el.textContent+=a.map(x=>typeof x==='string'?x:JSON.stringify(x,null,2)).join(" ")+"\n";}};
 const fmtMoney = n => (n??0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtInt   = n => (n??0).toLocaleString();
-
 function num(x){ if(x==null) return 0; let s=String(x).trim().replace(/[^\d.,-]/g,"");
   if(s.includes(",")&&s.includes(".")){ if(s.lastIndexOf(".")>s.lastIndexOf(",")) s=s.replace(/,/g,""); else s=s.replace(/\./g,"").replace(",",".");}
   else if(s.includes(",")&&!s.includes(".")) s=s.replace(",","."); else s=s.replace(/,/g,"");
@@ -13,7 +11,6 @@ function num(x){ if(x==null) return 0; let s=String(x).trim().replace(/[^\d.,-]/
 }
 const typeLabel = t => (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":(String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
 
-// Images with fallback
 function imgHTML(code, alt=""){
   const base = window.IMAGES_BASE || "./public/images/";
   const exts = window.IMAGE_EXTS || [".webp",".jpg",".png"];
@@ -23,7 +20,6 @@ function imgHTML(code, alt=""){
   return `<img class="thumb" src="${first}" onerror="${onerr}" alt="${alt}">`;
 }
 
-// Fetch JSON
 async function fetchDataJSON(){
   if(!window.JSON_URLS || !window.JSON_URLS.length) throw new Error("No JSON_URLS configured (check config.js)");
   let lastErr;
@@ -48,18 +44,11 @@ function parseDateAny(v){
   if(!v) return null;
   if (v instanceof Date) return isNaN(v) ? null : v;
   let s = String(v).trim();
-  if (/^\d+(\.\d+)?$/.test(s)) { // Excel serial
-    const serial = Number(s);
-    const base = new Date(Date.UTC(1899,11,30));
-    const d = new Date(base.getTime() + serial*86400000);
-    return isNaN(d) ? null : d;
-  }
-  s = s.replace(/-/g,'/'); // be lenient
-  const d = new Date(s);
-  return isNaN(d) ? null : d;
+  if (/^\d+(\.\d+)?$/.test(s)) { const serial=Number(s); const base=new Date(Date.UTC(1899,11,30)); const d=new Date(base.getTime()+serial*86400000); return isNaN(d)?null:d; }
+  s=s.replace(/-/g,'/'); const d=new Date(s); return isNaN(d)?null:d;
 }
 
-// Normalize all rows
+// Normalize rows
 function normalize(rows){
   return rows.map(r=>{
     const qty=num(r.Qty), unit=num(r.UnitPrice);
@@ -67,7 +56,7 @@ function normalize(rows){
     const invoice = r.InvoicePath || r.Invoice || r.InvoiceFile || "";
     const invDateRaw = r["Date"] ?? r["InvoiceDate"] ?? r["Invoice Date"] ?? r["InvDate"] ?? r["O"] ?? r["date"];
     const invDate = parseDateAny(invDateRaw);
-    const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : ""; // YYYY-MM
+    const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : "";
     return {
       dateFile: r.InvoiceFile || r.Date || "",
       client: r.Client || "",
@@ -78,7 +67,7 @@ function normalize(rows){
       code: String(r.ItemCode||"").trim().toUpperCase().replace(/\s+/g,""),
       desc: r["Product/Description"] || r.ProductDescription || r.Description || "",
       qty, unit, line, invTotal: num(r.InvoiceTotal),
-      supplier: r.Supplier || "",
+      supplier: r.Supplier || "",                     // ⇦ Supplier (col L)
       category: r.Category || "",
       subcat: r["Sub-category"] || r.Subcategory || "",
       invDate, ym
@@ -93,11 +82,13 @@ function applyFilters(all){
   const cat = document.getElementById("filter-category").value;
   const sub = document.getElementById("filter-subcat").value;
   const month = document.getElementById("filter-month").value;
+  const supplier = document.getElementById("filter-supplier").value;   // ⇦ new
   return all.filter(r=>{
     if(type!=="ALL" && r.type!==type) return false;
     if(cat && r.category!==cat) return false;
     if(sub && r.subcat!==sub) return false;
     if(month && r.ym!==month) return false;
+    if(supplier && r.supplier!==supplier) return false;                // ⇦ new
     return true;
   });
 }
@@ -108,7 +99,7 @@ function aggregate(all){
   const totalQty = all.reduce((s,r)=>s+(r.qty||0),0);
   const avg = invoices ? turnover/invoices : 0;
 
-  // Top clients: by value and by count (phone→unique invoice count)
+  // Top clients
   const valA={}, valB={}, cntA={}, cntB={};
   const seenA=new Map(), seenB=new Map(); // phone -> Set(invoices)
   all.forEach(r=>{
@@ -156,11 +147,20 @@ function aggregate(all){
 }
 
 function buildFilters(all){
-  const cats=uniqSorted(all.map(r=>r.category)), subs=uniqSorted(all.map(r=>r.subcat)), months=uniqSorted(all.map(r=>r.ym));
-  const catSel=document.getElementById("filter-category"), subSel=document.getElementById("filter-subcat"), mSel=document.getElementById("filter-month");
+  const cats=uniqSorted(all.map(r=>r.category));
+  const subs=uniqSorted(all.map(r=>r.subcat));
+  const months=uniqSorted(all.map(r=>r.ym));
+  const sups=uniqSorted(all.map(r=>r.supplier));          // ⇦ suppliers
+
+  const catSel=document.getElementById("filter-category");
+  const subSel=document.getElementById("filter-subcat");
+  const mSel=document.getElementById("filter-month");
+  const supSel=document.getElementById("filter-supplier");
+
   cats.forEach(c=>{const o=document.createElement("option"); o.value=c; o.textContent=c; catSel.appendChild(o);});
   subs.forEach(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; subSel.appendChild(o);});
   months.forEach(m=>{ if(!m) return; const o=document.createElement("option"); o.value=m; o.textContent=m; mSel.appendChild(o);});
+  sups.forEach(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; supSel.appendChild(o);}); // ⇦
 }
 
 function renderKPIs(a){
@@ -196,7 +196,6 @@ function renderBestItems(el, list, mode){
   });
 }
 
-// Trend chart
 let trendChart;
 function renderTrend(months, monthly){
   const labels = months;
@@ -210,7 +209,7 @@ function renderTrend(months, monthly){
   });
 }
 
-// Collapsible cards
+// Collapsible Top Clients
 function wireCollapsibles(){
   document.querySelectorAll('.toggle[data-target]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -256,6 +255,7 @@ async function main(){
     document.getElementById("filter-category").addEventListener("change", recomputeAndRender);
     document.getElementById("filter-subcat").addEventListener("change", recomputeAndRender);
     document.getElementById("filter-month").addEventListener("change", recomputeAndRender);
+    document.getElementById("filter-supplier").addEventListener("change", recomputeAndRender); // ⇦ new
 
     // Mode toggles
     document.getElementById("clientsModeA").addEventListener("click", e=>{

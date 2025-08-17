@@ -20,7 +20,7 @@
     .kpi{text-align:center}
     .kpi .label{font-size:13px;color:var(--muted)}
     .kpi .num{font-size:44px;font-weight:800;line-height:1.05;letter-spacing:-.3px}
-    .filters{grid-template-columns:repeat(4,1fr)}
+    .filters{grid-template-columns:repeat(5,1fr)}
     .rset{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .sel{padding:10px 12px;border:1px solid var(--card-br);border-radius:12px;font-size:14px;background:white}
     .pillset{display:inline-flex;background:#f1f3f5;border-radius:999px;padding:3px;gap:3px}
@@ -29,22 +29,20 @@
     .tiny{font-size:12px;color:var(--muted)}
     .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
     .list{max-height:none;overflow:visible}
-    .li{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--card-br)}
+    .list.scroll{max-height:240px;overflow:auto}         /* ⇦ shorter best-sellers */
+    .li{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--card-br)}
     .li:last-child{border-bottom:0}
-    .thumb{width:80px;height:80px;flex:0 0 80px;border-radius:12px;border:1px solid var(--card-br);object-fit:contain;background:#fff}
+    .thumb{width:64px;height:64px;flex:0 0 64px;border-radius:12px;border:1px solid var(--card-br);object-fit:contain;background:#fff}
     .grow{min-width:0;flex:1}
-    .name{font-weight:600}
-    .muted{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .muted{color:var(--muted);font-size:12px;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
     .value{margin-left:auto;font-weight:700}
     .badges{display:flex;gap:8px}
     .badge{display:inline-flex;align-items:center;gap:6px;background:#eef2ff;color:#1e40af;border-radius:999px;padding:6px 10px;font-size:12px}
 
-    /* --- collapsible cards --- */
+    /* collapsible Top Clients */
     .section-title .toggle{border:1px solid var(--card-br);background:#fff;font-size:12px;padding:6px 10px;border-radius:999px;cursor:pointer}
     .card.collapsed .body{display:none}
-
-    /* Best Sellers: same width as Top Clients + shorter with scroll */
-    .list.scroll{max-height:360px;overflow:auto}
   </style>
 </head>
 <body>
@@ -68,7 +66,7 @@
       <div class="card kpi"><div class="label">Average Basket</div><div id="kpi-avg" class="num">—</div></div>
     </section>
 
-    <!-- Filters -->
+    <!-- Filters (added Supplier) -->
     <section class="row filters" style="margin-top:16px">
       <div class="card">
         <div class="label">Type</div>
@@ -89,6 +87,10 @@
       <div class="card">
         <div class="label">Month</div>
         <select id="filter-month" class="sel"><option value="">All months</option></select>
+      </div>
+      <div class="card">
+        <div class="label">Supplier</div>
+        <select id="filter-supplier" class="sel"><option value="">All suppliers</option></select>
       </div>
     </section>
 
@@ -137,7 +139,7 @@
             <button class="pill" data-mode="qty" aria-pressed="false">By Qty</button>
           </div>
         </div>
-        <ul id="list-items" class="list scroll"></ul>
+        <ul id="list-items" class="list scroll"></ul> <!-- compact + scroll -->
       </div>
 
       <div class="card">
@@ -158,10 +160,8 @@
     </section>
   </div>
 
-  <!-- Chart.js for trend -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-
-  <script src="config.js?v=30"></script>
-  <script src="app.js?v=30"></script>
+  <script src="config.js?v=40"></script>
+  <script src="app.js?v=40"></script>
 </body>
 </html>
