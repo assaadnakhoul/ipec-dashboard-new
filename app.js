@@ -101,9 +101,8 @@ async function tryPublishCSV(){
   return rows;
 }
 
-async function loadMatrixAndMap(){
-  async function loadMatrixAndMap() {
-  // 1) Apps Script CSV → matrix
+async function loadMatrixAndMap() {
+  // 1) Apps Script CSV → matrix (primary)
   try {
     log("Trying Apps Script CSV:", window.CSV_URL);
     const m = await fetchCSVText(window.CSV_URL);
@@ -115,6 +114,24 @@ async function loadMatrixAndMap(){
   } catch (e) {
     log("Apps Script CSV failed:", String(e));
   }
+
+  // 2) Optional: Publish-to-Web CSV fallback
+  if (window.PUBLISH_CSV_URL) {
+    try {
+      log("Trying Publish-to-Web CSV:", window.PUBLISH_CSV_URL);
+      const m = await fetchCSVText(window.PUBLISH_CSV_URL);
+      if (!m || m.length === 0) throw new Error("Empty publish CSV");
+      document.getElementById("badge-source").textContent = "Publish-to-Web CSV";
+      const headers = m[0];
+      const map = mapHeaders(headers);
+      return { headers, map, data: m.slice(1) };
+    } catch (e) {
+      log("Publish CSV failed:", String(e));
+    }
+  }
+
+  throw new Error("No data source succeeded; check IDs, access, or that the tab has rows.");
+}
 
   // 2) Publish-to-Web CSV fallback (optional)
   if (window.PUBLISH_CSV_URL) {
