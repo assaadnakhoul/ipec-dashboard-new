@@ -1,13 +1,12 @@
-/***********************
- * config.js
- * Place your settings here
- ***********************/
+<script>
+// ✅ Use the stable Apps Script Web App URL (ends with /exec)
+window.JSON_URLS = [
+  "https://script.google.com/macros/s/AKfycbwsvBV8yNbAzvaapA4H_WkFPC6PmALh4f8ohg8mXmx81CJ_81sAS5uJGQ3uQ7CHgLr1Iw/exec"
+  // If you really want to keep a googleusercontent echo link as a fallback,
+  // put the FULL (untruncated) URL here as a second item.
+];
 
-// Use your working Apps Script JSON link
-window.JSON_URL = "https://script.googleusercontent.com/macros/echo?user_content_key=AehSKLg3IaDlXfPa1...&lib=..."; 
-
-// (optional) base path for item pictures
+// Images
 window.IMAGES_BASE = "./public/images/";
-
-// (optional) try extensions in order
-window.IMAGE_EXTS = [".webp", ".jpg", ".png"];
+window.IMAGE_EXTS  = [".webp", ".jpg", ".png"];
+</script>

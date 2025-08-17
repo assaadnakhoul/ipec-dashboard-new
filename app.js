@@ -65,17 +65,35 @@ function imgWithFallback(code, alt = "") {
 
 // ---- JSON fetcher (your Apps Script returns JSON) ----
 async function fetchDataJSON() {
-  if (!window.JSON_URL) throw new Error("window.JSON_URL is not defined (check config.js)");
-  log("Fetching JSON:", window.JSON_URL);
-  const res = await fetch(window.JSON_URL, { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-  const json = await res.json();
-  // Support both { ok:true, data:[...] } and plain arrays
-  const rows = Array.isArray(json) ? json : (json.data || json.rows || []);
-  if (!Array.isArray(rows)) throw new Error("Unexpected JSON structure (no array of rows)");
-  document.getElementById("badge-source").textContent = "Apps Script JSON";
-  log(`Loaded ${rows.length} rows from JSON`);
-  return rows;
+  if (!window.JSON_URLS || !window.JSON_URLS.length) {
+    throw new Error("No JSON_URLS configured (check config.js)");
+  }
+  let lastErr;
+  for (const url of window.JSON_URLS) {
+    try {
+      log("Fetching JSON:", url);
+      const res = await fetch(url, {
+        // Explicit CORs-friendly fetch; no credentials for public web app
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        cache: "no-store",
+        headers: { "Accept": "application/json" }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const json = await res.json();
+      const rows = Array.isArray(json) ? json : (json.data || json.rows || []);
+      if (!Array.isArray(rows)) throw new Error("Unexpected JSON structure");
+      document.getElementById("badge-source").textContent = "Apps Script JSON";
+      log(`Loaded ${rows.length} rows from JSON`);
+      return rows;
+    } catch (e) {
+      lastErr = e;
+      log("Fetch failed for", url, "→", String(e));
+      // try next URL, if any
+    }
+  }
+  throw lastErr || new Error("All JSON sources failed");
 }
 
 // ---- header auto-map for JSON objects ----
