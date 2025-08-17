@@ -130,26 +130,30 @@
     </section>
 
     <!-- Best Sellers + Trend (half/half) -->
-    <section class="row" style="grid-template-columns:1fr 1fr; margin-top:16px">
-      <div class="card" id="card-best">
-        <div class="section-title">
-          <div><strong>Best Sellers (top 20)</strong></div>
-          <div class="pillset" id="itemsMode">
-            <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-            <button class="pill" data-mode="qty" aria-pressed="false">By Qty</button>
-          </div>
-        </div>
-        <ul id="list-items" class="list scroll"></ul> <!-- compact + scroll -->
+    <!-- Best-Sellers stacked above Trend -->
+<section style="margin-top:16px">
+  <div class="card" id="card-best">
+    <div class="section-title">
+      <div><strong>Best Sellers (top 20)</strong></div>
+      <div class="pills" id="itemsMode">
+        <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
+        <button class="pill" data-mode="qty" aria-pressed="false">By Qty</button>
       </div>
+    </div>
+    <ul id="list-items" class="list scroll"></ul>
+  </div>
+</section>
 
-      <div class="card">
-        <div class="section-title">
-          <strong>Monthly Turnover Trend</strong>
-          <span class="tiny">Date extracted from column O</span>
-        </div>
-        <canvas id="trendChart" height="110"></canvas>
-      </div>
-    </section>
+<section style="margin-top:16px">
+  <div class="card">
+    <div class="section-title">
+      <strong>Monthly Turnover Trend</strong>
+      <span class="tiny">Date extracted from column O</span>
+    </div>
+    <canvas id="trendChart" height="110"></canvas>
+  </div>
+</section>
+
 
     <!-- Diagnostics -->
     <section class="card" id="diag" style="margin-top:16px">
