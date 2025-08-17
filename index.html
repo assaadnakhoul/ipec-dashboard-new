@@ -9,9 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 
   <style>
-    :root{
-      --card-bg:#fff; --card-br:#eaecef; --ink:#212529; --muted:#6b7280; --accent:#2a72ff;
-    }
+    :root{ --card-bg:#fff; --card-br:#eaecef; --ink:#212529; --muted:#6b7280; --accent:#2a72ff; }
     html,body{margin:0;background:#f6f7fb;color:var(--ink);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
     .wrap{max-width:1100px;margin:0 auto;padding:20px}
     h1{font-size:32px;font-weight:800;margin:0 0 4px}
@@ -19,27 +17,27 @@
     .row{display:grid;gap:16px}
     .card{background:var(--card-bg);border:1px solid var(--card-br);border-radius:16px;padding:16px}
     .kpis{grid-template-columns:repeat(4,1fr)}
+    .kpi{ text-align:center; }
     .kpi .label{font-size:13px;color:var(--muted)}
-    .kpi .num{font-size:56px;font-weight:800;line-height:1.05;letter-spacing:-.5px}
-    .filters{grid-template-columns:repeat(3,1fr)}
+    .kpi .num{font-size:44px;font-weight:800;line-height:1.05;letter-spacing:-.3px} /* smaller + centered */
+    .filters{grid-template-columns:repeat(4,1fr)}
+    .rset{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .sel{padding:10px 12px;border:1px solid var(--card-br);border-radius:12px;font-size:14px;background:white}
     .pillset{display:inline-flex;background:#f1f3f5;border-radius:999px;padding:3px;gap:3px}
     .pill{border:0;background:transparent;padding:8px 14px;border-radius:999px;font-size:14px;cursor:pointer}
     .pill[aria-pressed="true"]{background:#fff;border:1px solid var(--card-br)}
     .tiny{font-size:12px;color:var(--muted)}
     .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-    .list{max-height:240px;overflow:auto} /* ≈ 5 rows */
+    .list{max-height:none;overflow:visible} /* show all 20 */
     .li{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--card-br)}
     .li:last-child{border-bottom:0}
-    .thumb{width:96px;height:96px;flex:0 0 96px;border-radius:12px;border:1px solid var(--card-br);object-fit:cover;background:#f3f4f6}
+    .thumb{width:80px;height:80px;flex:0 0 80px;border-radius:12px;border:1px solid var(--card-br);object-fit:contain;background:#fff} /* fit neatly */
     .grow{min-width:0;flex:1}
     .name{font-weight:600}
     .muted{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .value{margin-left:auto;font-weight:700}
     .badges{display:flex;gap:8px}
     .badge{display:inline-flex;align-items:center;gap:6px;background:#eef2ff;color:#1e40af;border-radius:999px;padding:6px 10px;font-size:12px}
-    .right{display:flex;gap:16px;align-items:center}
-    select, .sel{padding:10px 12px;border:1px solid var(--card-br);border-radius:12px;font-size:14px;background:white;width:100%}
-    .rset{display:flex;gap:8px;align-items:center}
   </style>
 </head>
 <body>
@@ -47,7 +45,7 @@
     <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <div>
         <h1>IPEC Sales Dashboard</h1>
-        <p class="sub">Clear, large KPIs • quick filters • big item pictures</p>
+        <p class="sub">Large KPIs • quick filters • neat thumbnails • trends by month</p>
       </div>
       <div class="badges">
         <span class="badge" id="badge-total-rows">— rows</span>
@@ -75,11 +73,15 @@
       </div>
       <div class="card">
         <div class="label">Category</div>
-        <select id="filter-category"><option value="">All</option></select>
+        <select id="filter-category" class="sel"><option value="">All</option></select>
       </div>
       <div class="card">
         <div class="label">Sub-category</div>
-        <select id="filter-subcat"><option value="">All</option></select>
+        <select id="filter-subcat" class="sel"><option value="">All</option></select>
+      </div>
+      <div class="card">
+        <div class="label">Month</div>
+        <select id="filter-month" class="sel"><option value="">All months</option></select>
       </div>
     </section>
 
@@ -87,7 +89,7 @@
     <section class="row" style="grid-template-columns:1fr 1fr; margin-top:16px">
       <div class="card">
         <div class="section-title">
-          <div><strong>Top Clients — INVOICE OUT</strong> <span class="tiny">(top 20; 5 visible)</span></div>
+          <div><strong>Top Clients — INVOICE OUT</strong> <span class="tiny">(top 20)</span></div>
           <div class="pillset" id="clientsModeA">
             <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
             <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
@@ -98,7 +100,7 @@
 
       <div class="card">
         <div class="section-title">
-          <div><strong>Top Clients — INVOICE IN</strong> <span class="tiny">(top 20; 5 visible)</span></div>
+          <div><strong>Top Clients — INVOICE IN</strong> <span class="tiny">(top 20)</span></div>
           <div class="pillset" id="clientsModeB">
             <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
             <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
@@ -109,10 +111,10 @@
     </section>
 
     <!-- Best Sellers -->
-    <section class="row" style="grid-template-columns:1fr 1fr; margin-top:16px">
-      <div class="card" style="grid-column:1 / -1">
+    <section class="row" style="grid-template-columns:1fr; margin-top:16px">
+      <div class="card">
         <div class="section-title">
-          <div><strong>Best Sellers (top 20; 5 visible)</strong></div>
+          <div><strong>Best Sellers (top 20)</strong></div>
           <div class="pillset" id="itemsMode">
             <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
             <button class="pill" data-mode="qty" aria-pressed="false">By Qty</button>
@@ -122,16 +124,30 @@
       </div>
     </section>
 
+    <!-- Trends -->
+    <section class="row" style="grid-template-columns:1fr; margin-top:16px">
+      <div class="card">
+        <div class="section-title">
+          <strong>Monthly Turnover Trend</strong>
+          <span class="tiny">Date extracted from column O</span>
+        </div>
+        <canvas id="trendChart" height="110"></canvas>
+      </div>
+    </section>
+
     <!-- Diagnostics -->
     <section class="card" id="diag" style="margin-top:16px">
       <div class="section-title">
-        <strong>Diagnostics</strong><span class="tiny">Open this only when debugging.</span>
+        <strong>Diagnostics</strong><span class="tiny">Only for debugging.</span>
       </div>
       <pre id="diag-log" class="tiny" style="max-height:220px;overflow:auto;background:#f8fafc;border-radius:12px;padding:12px"></pre>
     </section>
   </div>
 
-  <script src="config.js?v=20"></script>
-  <script src="app.js?v=20"></script>
+  <!-- Chart.js for trends -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <script src="config.js?v=21"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>
