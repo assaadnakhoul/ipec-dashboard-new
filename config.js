@@ -1,7 +1,7 @@
 // config.js
 window.JSON_URLS = [
   // New master sheet Apps Script endpoint
-  "https://script.google.com/macros/s/AKfycbzhZzLf-Fan1q8mjlBKwm7p6USV_GBlY5DprRGzQyQn_c58CT0G2nII8__LpvpRlBAUtA/exec"
+  "https://script.google.com/macros/s/AKfycbywz_pa45tfEIgDH3rjHFr_pcXfGtgfAXjj960lVTmovF_u96B5p8a7XLqhHIjwdK70WA/exec"
 ];
 
 window.IMAGES_BASE = "./public/images/";
