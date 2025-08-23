@@ -1,4 +1,4 @@
-// netlify/functions/gas.js (CommonJS for widest compatibility)
+// netlify/functions/gas.js
 exports.handler = async () => {
   try {
     const GAS_URL = "https://script.google.com/macros/s/AKfycbywz_pa45tfEIgDH3rjHFr_pcXfGtgfAXjj960lVTmovF_u96B5p8a7XLqhHIjwdK70WA/exec";
