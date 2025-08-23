@@ -84,7 +84,10 @@ function normalize(rows){
   }).filter(o=>Object.values(o).some(v=>v!==""&&v!=null));
 }
 
-const uniqSorted = a => Array.from(new Set(a.filter(Boolean))).sort((x,y)=>x.localeCompare(y));
+const uniqSorted = a =>
+  Array.from(new Set((a || []).filter(v => v !== null && v !== undefined)))
+    .sort((x, y) => String(x).localeCompare(String(y)));
+
 
 // ---------- filters ----------
 function applyFilters(all){
