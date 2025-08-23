@@ -3,8 +3,8 @@
  * - Loads JSON from Apps Script
  * - Normalizes rows
  * - Builds filters (Type, Category, Sub-category, Month, Supplier)
- * - Renders KPIs, Top Clients, Best Sellers, Trend
- * - NEW: dynamic "grand total" and Turnover % of Total KPI
+ * - Renders KPIs, Top Clients, Top Suppliers, Best Sellers, Trend
+ * - Dynamic "grand total" & Turnover % of Total KPI
  ****************************************************/
 
 // ---------- utils ----------
@@ -12,12 +12,19 @@ const log = (...a)=>{console.log(...a); const el=document.getElementById("diag-l
 const fmtMoney = n => (n??0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtInt   = n => (n??0).toLocaleString();
 
-function num(x){ if(x==null) return 0; let s=String(x).trim().replace(/[^\d.,-]/g,"");
-  if(s.includes(",")&&s.includes(".")){ if(s.lastIndexOf(".")>s.lastIndexOf(",")) s=s.replace(/,/g,""); else s=s.replace(/\./g,"").replace(",",".");}
-  else if(s.includes(",")&&!s.includes(".")) s=s.replace(",","."); else s=s.replace(/,/g,"");
+function num(x){
+  if(x==null) return 0;
+  let s=String(x).trim().replace(/[^\d.,-]/g,"");
+  if(s.includes(",")&&s.includes(".")){
+    if(s.lastIndexOf(".")>s.lastIndexOf(",")) s=s.replace(/,/g,"");
+    else s=s.replace(/\./g,"").replace(",",".");
+  } else if(s.includes(",")&&!s.includes(".")) s=s.replace(",",".");
+  else s=s.replace(/,/g,"");
   const n=Number(s); return isNaN(n)?0:n;
 }
-const typeLabel = t => (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":(String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
+const typeLabel = t =>
+  (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":
+  (String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
 
 // images with fallback
 function imgHTML(code, alt=""){
@@ -36,7 +43,8 @@ async function fetchDataJSON(){
   for(const url of window.JSON_URLS){
     try{
       log("Fetching JSON:", url);
-      const res = await fetch(url,{method:"GET",mode:"cors",credentials:"omit",cache:"no-store",headers:{"Accept":"application/json"}});
+      const bust = (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+      const res = await fetch(url + bust, { method:"GET", mode:"cors", credentials:"omit", cache:"no-store", headers:{ "Accept":"application/json" } });
       if(!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
       const j = await res.json();
       const rows = Array.isArray(j) ? j : (j.data || j.rows || []);
@@ -47,15 +55,6 @@ async function fetchDataJSON(){
     }catch(e){ lastErr=e; log("Fetch failed:", String(e)); }
   }
   throw lastErr || new Error("All JSON sources failed");
-  // inside fetchDataJSON, replace the fetch(...) line with:
-const bust = (url.includes('?') ? '&' : '?') + 't=' + Date.now();
-const res = await fetch(url + bust, {
-  method: "GET",
-  mode: "cors",
-  credentials: "omit",
-  cache: "no-store",
-  headers: { "Accept": "application/json" }
-});
 }
 
 function parseDateAny(v){
@@ -72,11 +71,9 @@ function parseDateAny(v){
     return isNaN(d) ? null : d;
   }
 
-  // Common text dates
-  s = s.replace(/-/g,'/'); // tolerate 2025-07-11
+  s = s.replace(/-/g,'/');
   const d1 = new Date(s);
   if (!isNaN(d1)) return d1;
-
   return null;
 }
 
@@ -84,7 +81,6 @@ function inferDateFromName(name){
   if (!name) return null;
   const s = String(name);
 
-  // e.g. INV-123-0125  => mmYY
   let m = /\bINV-\d+-(\d{4})\b/i.exec(s);
   if (m) {
     const mm = parseInt(m[1].slice(0,2),10);
@@ -93,7 +89,6 @@ function inferDateFromName(name){
     return new Date(yr, mm-1, 1);
   }
 
-  // e.g. ...-240711 (YYMMDD)
   m = /-(\d{6})(?!\d)/.exec(s);
   if (m) {
     const yy = parseInt(m[1].slice(0,2),10);
@@ -104,7 +99,6 @@ function inferDateFromName(name){
     if (!isNaN(d)) return d;
   }
 
-  // e.g. IPEC Invoice 123-0125
   m = /IPEC\s*Invoice[^\d]*\d+\s*-\s*(\d{4})/i.exec(s);
   if (m) {
     const mm = parseInt(m[1].slice(0,2),10);
@@ -138,7 +132,6 @@ function normalize(rows){
       desc: r["Product/Description"] || r.ProductDescription || r.Description || "",
       qty, unit, line, invTotal: num(r.InvoiceTotal),
 
-      // ✅ exact fields requested
       supplier: r.Supplier || "",
       category: r.Category || "",
       subcat:   r["Sub-category"] || r.Subcategory || "",
@@ -148,11 +141,9 @@ function normalize(rows){
   }).filter(o=>Object.values(o).some(v=>v!==""&&v!=null));
 }
 
-
 const uniqSorted = a =>
   Array.from(new Set((a || []).filter(v => v !== null && v !== undefined)))
     .sort((x, y) => String(x).localeCompare(String(y)));
-
 
 // ---------- filters ----------
 function applyFilters(all){
@@ -222,6 +213,21 @@ function aggregate(all){
   const topA_count = Object.entries(cntA).sort((x,y)=>y[1]-x[1]).slice(0,20);
   const topB_count = Object.entries(cntB).sort((x,y)=>y[1]-x[1]).slice(0,20);
 
+  // Top suppliers (value + # distinct invoices)
+  const supVal = {}, supCnt = {};
+  const supSeen = new Map(); // supplier -> Set(invoices)
+  all.forEach(r=>{
+    if(!r.supplier) return;
+    supVal[r.supplier] = (supVal[r.supplier]||0) + r.line;
+    if(!supSeen.has(r.supplier)) supSeen.set(r.supplier, new Set());
+    supSeen.get(r.supplier).add(r.invoice);
+  });
+  for(const [sup,set] of supSeen.entries()){
+    supCnt[sup] = (supCnt[sup]||0) + set.size;
+  }
+  const topSup_value = Object.entries(supVal).sort((x,y)=>y[1]-x[1]).slice(0,20);
+  const topSup_count = Object.entries(supCnt).sort((x,y)=>y[1]-x[1]).slice(0,20);
+
   // Best sellers
   const byVal={}, byQty={}, meta={};
   all.forEach(r=>{
@@ -239,6 +245,7 @@ function aggregate(all){
 
   return { invoices, turnover, totalQty, avg,
            topA_value, topB_value, topA_count, topB_count,
+           topSup_value, topSup_count,
            bestVal, bestQty, months, monthly };
 }
 
@@ -249,7 +256,6 @@ function renderKPIs(a, grand){
   document.getElementById("kpi-qty").textContent=fmtInt(a.totalQty);
   document.getElementById("kpi-avg").textContent=fmtMoney(a.avg);
 
-  // NEW: Turnover % of Total (grand from ALL rows)
   const pct = grand && grand.turnover>0 ? (a.turnover / grand.turnover) * 100 : 0;
   const el = document.getElementById("kpi-turnover-percent");
   if (el) el.textContent = pct.toFixed(1) + "%";
@@ -302,8 +308,7 @@ function renderTrend(months, monthly){
   });
 }
 
-
-// ---------- wire collapsible ----------
+// ---------- collapsibles ----------
 function wireCollapsibles(){
   document.querySelectorAll('.toggle[data-target]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -323,29 +328,30 @@ async function main(){
     const all = normalize(raw);
     document.getElementById("badge-total-rows").textContent = `${all.length} rows`;
 
-    // Build filters, compute GRAND totals (no filters)
     buildFilters(all);
-    const grand = aggregate(all); // <-- dynamic grand totals for entire dataset
+    const grand = aggregate(all);
 
-    const state = { clientsA:"value", clientsB:"value", items:"value" };
+    const state = { clientsA:"value", clientsB:"value", suppliers:"value", items:"value" };
 
     function recomputeAndRender(){
       const filtered = applyFilters(all);
       const agg = aggregate(filtered);
-      const sumA = filtered.filter(r=>r.type==="A").reduce((s,r)=>s+(r.line||0),0);
-      const sumB = filtered.filter(r=>r.type==="B").reduce((s,r)=>s+(r.line||0),0);
-log("DEBUG Totals → A:", fmtMoney(sumA), "B:", fmtMoney(sumB), "A+B:", fmtMoney(sumA+sumB));
 
-      // KPIs (includes the new percentage KPI)
+      // KPIs
       renderKPIs(agg, grand);
 
-      // Top clients
+      // Clients A/B
       setPillset(document.getElementById("clientsModeA"), state.clientsA);
       setPillset(document.getElementById("clientsModeB"), state.clientsB);
       renderTopClients(document.getElementById("list-topA"),
         state.clientsA==="value" ? agg.topA_value : agg.topA_count, state.clientsA);
       renderTopClients(document.getElementById("list-topB"),
         state.clientsB==="value" ? agg.topB_value : agg.topB_count, state.clientsB);
+
+      // Suppliers
+      setPillset(document.getElementById("suppliersMode"), state.suppliers);
+      renderTopClients(document.getElementById("list-topSup"),
+        state.suppliers==="value" ? agg.topSup_value : agg.topSup_count, state.suppliers);
 
       // Best items
       setPillset(document.getElementById("itemsMode"), state.items);
@@ -357,15 +363,14 @@ log("DEBUG Totals → A:", fmtMoney(sumA), "B:", fmtMoney(sumB), "A+B:", fmtMone
     }
 
     // Filter events
-document.querySelectorAll('input[name="type"]').forEach(r => {
-  try { r.addEventListener("change", recomputeAndRender); } catch (e) { log("Type radio bind failed:", e); }
-});
-["filter-category","filter-subcat","filter-month","filter-supplier"].forEach(id => {
-  const el = document.getElementById(id);
-  if (el) el.addEventListener("change", recomputeAndRender);
-  else log("Missing filter element:", id);
-});
-
+    document.querySelectorAll('input[name="type"]').forEach(r=>{
+      try{ r.addEventListener("change", recomputeAndRender); }catch(e){ log("Type radio bind failed:", e); }
+    });
+    ["filter-category","filter-subcat","filter-month","filter-supplier"].forEach(id=>{
+      const el=document.getElementById(id);
+      if(el) el.addEventListener("change", recomputeAndRender);
+      else log("Missing filter element:", id);
+    });
 
     // Mode toggles
     document.getElementById("clientsModeA").addEventListener("click", e=>{
@@ -373,6 +378,9 @@ document.querySelectorAll('input[name="type"]').forEach(r => {
     });
     document.getElementById("clientsModeB").addEventListener("click", e=>{
       const b=e.target.closest(".pill"); if(!b) return; state.clientsB=b.dataset.mode; recomputeAndRender();
+    });
+    document.getElementById("suppliersMode").addEventListener("click", e=>{
+      const b=e.target.closest(".pill"); if(!b) return; state.suppliers=b.dataset.mode; recomputeAndRender();
     });
     document.getElementById("itemsMode").addEventListener("click", e=>{
       const b=e.target.closest(".pill"); if(!b) return; state.items=b.dataset.mode; recomputeAndRender();

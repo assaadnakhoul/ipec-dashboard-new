@@ -7,8 +7,8 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-<link rel="preconnect" href="https://script.google.com" crossorigin>
-<link rel="dns-prefetch" href="https://script.google.com">
+  <link rel="preconnect" href="https://script.google.com" crossorigin>
+  <link rel="dns-prefetch" href="https://script.google.com">
   <style>
     :root{ --card-bg:#fff; --card-br:#eaecef; --ink:#212529; --muted:#6b7280; --accent:#2a72ff; }
     html,body{margin:0;background:#f6f7fb;color:var(--ink);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
@@ -21,7 +21,7 @@
 
     /* KPIs */
     .kpis{grid-template-columns:repeat(4,1fr)}
-    .kpis.kpis-extra{grid-template-columns:repeat(1,1fr)} /* 2nd row is one card */
+    .kpis.kpis-extra{grid-template-columns:repeat(1,1fr)}
     .kpi{text-align:center}
     .kpi .label{font-size:13px;color:var(--muted)}
     .kpi .num{font-size:44px;font-weight:800;line-height:1.05;letter-spacing:-.3px}
@@ -118,8 +118,8 @@
       </div>
     </section>
 
-    <!-- Top Clients -->
-    <section class="row" style="grid-template-columns:1fr 1fr; margin-top:16px">
+    <!-- Top Clients (now 3 columns) -->
+    <section class="row" style="grid-template-columns:1fr 1fr 1fr; margin-top:16px">
       <div class="card" data-collapsible id="card-topA">
         <div class="section-title">
           <div><strong>Top Clients — INVOICE OUT</strong> <span class="tiny">(top 20)</span></div>
@@ -134,21 +134,37 @@
           <ol id="list-topA" class="list scroll"></ol>
         </div>
       </div>
-<div class="card" data-collapsible id="card-topB">
-  <div class="section-title">
-    <div><strong>Top Clients — INVOICE IN</strong> <span class="tiny">(top 20)</span></div>
-    <div class="right" style="display:flex;gap:12px;align-items:center">
-      <div class="pillset" id="clientsModeB">
-        <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-        <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
-      </div>
-    </div>
-  </div>
-  <div class="body">
-    <ol id="list-topB" class="list scroll"></ol>
-  </div>
-</div>
 
+      <div class="card" data-collapsible id="card-topB">
+        <div class="section-title">
+          <div><strong>Top Clients — INVOICE IN</strong> <span class="tiny">(top 20)</span></div>
+          <div class="right" style="display:flex;gap:12px;align-items:center">
+            <div class="pillset" id="clientsModeB">
+              <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
+              <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
+            </div>
+          </div>
+        </div>
+        <div class="body">
+          <ol id="list-topB" class="list scroll"></ol>
+        </div>
+      </div>
+
+      <!-- NEW: Top Suppliers -->
+      <div class="card" data-collapsible id="card-topSup">
+        <div class="section-title">
+          <div><strong>Top Suppliers</strong> <span class="tiny">(top 20)</span></div>
+          <div class="right" style="display:flex;gap:12px;align-items:center">
+            <div class="pillset" id="suppliersMode">
+              <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
+              <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
+            </div>
+          </div>
+        </div>
+        <div class="body">
+          <ol id="list-topSup" class="list scroll"></ol>
+        </div>
+      </div>
     </section>
 
     <!-- Best Sellers -->
@@ -186,8 +202,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="config.js?v=51"></script>
-<script src="app.js?v=51"></script>
-  
+  <script src="config.js?v=52"></script>
+  <script src="app.js?v=52"></script>
 </body>
 </html>
