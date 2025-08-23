@@ -49,25 +49,77 @@ async function fetchDataJSON(){
   throw lastErr || new Error("All JSON sources failed");
 }
 
-// ---------- normalization ----------
 function parseDateAny(v){
   if(!v) return null;
   if (v instanceof Date) return isNaN(v) ? null : v;
+
   let s = String(v).trim();
-  if (/^\d+(\.\d+)?$/.test(s)) { const serial=Number(s); const base=new Date(Date.UTC(1899,11,30)); const d=new Date(base.getTime()+serial*86400000); return isNaN(d)?null:d; }
-  s=s.replace(/-/g,'/'); const d=new Date(s); return isNaN(d)?null:d;
+
+  // Excel serial
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const serial = Number(s);
+    const base = new Date(Date.UTC(1899,11,30));
+    const d = new Date(base.getTime() + serial*86400000);
+    return isNaN(d) ? null : d;
+  }
+
+  // Common text dates
+  s = s.replace(/-/g,'/'); // tolerate 2025-07-11
+  const d1 = new Date(s);
+  if (!isNaN(d1)) return d1;
+
+  return null;
+}
+
+function inferDateFromName(name){
+  if (!name) return null;
+  const s = String(name);
+
+  // e.g. INV-123-0125  => mmYY
+  let m = /\bINV-\d+-(\d{4})\b/i.exec(s);
+  if (m) {
+    const mm = parseInt(m[1].slice(0,2),10);
+    const yy = parseInt(m[1].slice(2,4),10);
+    const yr = 2000 + yy;
+    return new Date(yr, mm-1, 1);
+  }
+
+  // e.g. ...-240711 (YYMMDD)
+  m = /-(\d{6})(?!\d)/.exec(s);
+  if (m) {
+    const yy = parseInt(m[1].slice(0,2),10);
+    const mm = parseInt(m[1].slice(2,4),10);
+    const dd = parseInt(m[1].slice(4,6),10);
+    const yr = 2000 + yy;
+    const d = new Date(yr, mm-1, dd);
+    if (!isNaN(d)) return d;
+  }
+
+  // e.g. IPEC Invoice 123-0125
+  m = /IPEC\s*Invoice[^\d]*\d+\s*-\s*(\d{4})/i.exec(s);
+  if (m) {
+    const mm = parseInt(m[1].slice(0,2),10);
+    const yy = parseInt(m[1].slice(2,4),10);
+    const yr = 2000 + yy;
+    return new Date(yr, mm-1, 1);
+  }
+  return null;
 }
 
 function normalize(rows){
   return rows.map(r=>{
-    const qty=num(r.Qty), unit=num(r.UnitPrice);
+    const qty = num(r.Qty), unit = num(r.UnitPrice);
     const line = r.LineTotal!==undefined && r.LineTotal!=="" ? num(r.LineTotal) : qty*unit;
-    const invoice = r.InvoicePath || r.Invoice || r.InvoiceFile || "";
-    const invDateRaw = r["Date"] ?? r["InvoiceDate"] ?? r["Invoice Date"] ?? r["InvDate"] ?? r["O"] ?? r["date"];
-    const invDate = parseDateAny(invDateRaw);
+
+    const invoice = r.InvoicePath || r.Invoice || r.InvoiceFile || r.InvoiceName || "";
+    const invDateRaw = r.Date || r.InvoiceDate || r["Invoice Date"] || r.InvDate || r.O || r.date;
+    let invDate = parseDateAny(invDateRaw);
+    if (!invDate) invDate = inferDateFromName(r.InvoiceName || r.InvoiceFile || r.InvoicePath);
+
     const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : "";
+
     return {
-      dateFile: r.InvoiceFile || r.Date || "",
+      dateFile: r.InvoiceFile || r.InvoiceName || r.Date || "",
       client: r.Client || "",
       phone: r.Phone || "",
       type: String(r.Type||"").toUpperCase(),
@@ -76,13 +128,17 @@ function normalize(rows){
       code: String(r.ItemCode||"").trim().toUpperCase().replace(/\s+/g,""),
       desc: r["Product/Description"] || r.ProductDescription || r.Description || "",
       qty, unit, line, invTotal: num(r.InvoiceTotal),
+
+      // ✅ exact fields requested
       supplier: r.Supplier || "",
       category: r.Category || "",
-      subcat: r["Sub-category"] || r.Subcategory || "",
+      subcat:   r["Sub-category"] || r.Subcategory || "",
+
       invDate, ym
     };
   }).filter(o=>Object.values(o).some(v=>v!==""&&v!=null));
 }
+
 
 const uniqSorted = a =>
   Array.from(new Set((a || []).filter(v => v !== null && v !== undefined)))
@@ -267,6 +323,9 @@ async function main(){
     function recomputeAndRender(){
       const filtered = applyFilters(all);
       const agg = aggregate(filtered);
+      const sumA = filtered.filter(r=>r.type==="A").reduce((s,r)=>s+(r.line||0),0);
+      const sumB = filtered.filter(r=>r.type==="B").reduce((s,r)=>s+(r.line||0),0);
+log("DEBUG Totals → A:", fmtMoney(sumA), "B:", fmtMoney(sumB), "A+B:", fmtMoney(sumA+sumB));
 
       // KPIs (includes the new percentage KPI)
       renderKPIs(agg, grand);
