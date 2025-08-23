@@ -1,0 +1,4 @@
+<Data sheet for dashboard new> folder -> <Copie de Invoices_combined_NEW_17082025 used for data for scrapper> Sheet 
+on assaadcharbel98 drive contains the master sheet for dashboard, it feeds the dashboards new app. it is linked to the INVOICES file 
+and INVOICE IN file and IPEC Quote SYNTHESE AUGUST 2025.xlsx via a google sheet script that scraps new data on them.
+ 
