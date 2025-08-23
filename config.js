@@ -1,6 +1,5 @@
 window.JSON_URLS = [
-  "https://script.google.com/macros/s/AKfycbwJzsMoze5bFWutKp7VZ-Tgo5kcvEr2aU_R9gvunDpcdl71Vpq4BRFXclYmSxuz292pYw/exec",
-  "https://script.google.com/macros/s/AKfycbwsvBV8yNbAzvaapA4H_WkFPC6PmALh4f8ohg8mXmx81CJ_81sAS5uJGQ3uQ7CHgLr1Iw/exec"
+  "https://script.google.com/macros/s/AKfycbyhEUWIc_QdGN0VIf_gQHco_GpBn2DQe1ismEV-6flyQGwr-duHyFlSGmr6K5TFBJBBmQ/exec"
 ];
 
 window.IMAGES_BASE = "./public/images/";
