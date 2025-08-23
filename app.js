@@ -217,9 +217,15 @@ function renderBestItems(el, list, mode){
 // Trend chart
 let trendChart;
 function renderTrend(months, monthly){
+  const el = document.getElementById("trendChart");
+  if (!el) { log("No #trendChart element; skipping trend."); return; }
+  if (!window.Chart) { log("Chart.js not loaded; skipping trend."); return; }
+
   const labels = months;
-  const data = months.map(m=>monthly[m]||0);
-  const ctx = document.getElementById("trendChart").getContext("2d");
+  const data = months.map(m => monthly[m] || 0);
+  const ctx = el.getContext("2d");
+  if (!ctx) { log("No 2D context; skipping trend."); return; }
+
   if (trendChart) trendChart.destroy();
   trendChart = new Chart(ctx, {
     type: "line",
@@ -227,6 +233,7 @@ function renderTrend(months, monthly){
     options: { plugins:{legend:{display:false}}, scales:{ x:{ticks:{maxRotation:0}}, y:{beginAtZero:true} } }
   });
 }
+
 
 // ---------- wire collapsible ----------
 function wireCollapsibles(){
@@ -279,10 +286,15 @@ async function main(){
     }
 
     // Filter events
-    document.querySelectorAll('input[name="type"]').forEach(r=>r.addEventListener("change", recomputeAndRender));
-    ["filter-category","filter-subcat","filter-month","filter-supplier"].forEach(id=>{
-      document.getElementById(id).addEventListener("change", recomputeAndRender);
-    });
+document.querySelectorAll('input[name="type"]').forEach(r => {
+  try { r.addEventListener("change", recomputeAndRender); } catch (e) { log("Type radio bind failed:", e); }
+});
+["filter-category","filter-subcat","filter-month","filter-supplier"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("change", recomputeAndRender);
+  else log("Missing filter element:", id);
+});
+
 
     // Mode toggles
     document.getElementById("clientsModeA").addEventListener("click", e=>{
