@@ -376,4 +376,12 @@ document.querySelectorAll('input[name="type"]').forEach(r => {
     document.getElementById("badge-source").textContent="Error";
   }
 }
+const res = await fetch(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(), {
+  method: "GET",
+  mode: "cors",
+  credentials: "omit",
+  cache: "no-store",
+  headers: { "Accept": "application/json" }
+});
+
 main();
