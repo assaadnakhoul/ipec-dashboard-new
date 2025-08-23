@@ -47,6 +47,15 @@ async function fetchDataJSON(){
     }catch(e){ lastErr=e; log("Fetch failed:", String(e)); }
   }
   throw lastErr || new Error("All JSON sources failed");
+  // inside fetchDataJSON, replace the fetch(...) line with:
+const bust = (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+const res = await fetch(url + bust, {
+  method: "GET",
+  mode: "cors",
+  credentials: "omit",
+  cache: "no-store",
+  headers: { "Accept": "application/json" }
+});
 }
 
 function parseDateAny(v){
@@ -376,12 +385,5 @@ document.querySelectorAll('input[name="type"]').forEach(r => {
     document.getElementById("badge-source").textContent="Error";
   }
 }
-const res = await fetch(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(), {
-  method: "GET",
-  mode: "cors",
-  credentials: "omit",
-  cache: "no-store",
-  headers: { "Accept": "application/json" }
-});
 
 main();
