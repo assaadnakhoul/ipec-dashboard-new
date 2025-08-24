@@ -41,28 +41,44 @@ function imgHTML(code, alt=""){
 async function fetchDataJSON(){
   if(!window.JSON_URLS || !window.JSON_URLS.length) throw new Error("No JSON_URLS configured (check config.js)");
   let lastErr;
-  for(const url of window.JSON_URLS){
+  for (const baseUrl of window.JSON_URLS){
     try{
-      const bust = (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+      // cache-bust without adding non-simple headers (avoids preflight)
+      const url = baseUrl + (baseUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
       log("Fetching JSON:", url);
-      const res = await fetch(url + bust, {
-        method:"GET",
-        mode:"cors",
-        credentials:"omit",
-        cache:"no-store",
-        headers:{ "Accept":"application/json", "Pragma":"no-cache", "Cache-Control":"no-cache" }
+
+      const res = await fetch(url, {
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        cache: "no-store"      // fine; does not cause preflight
+        // ⛔ no custom headers here; even "Pragma"/"Cache-Control" will preflight
       });
+
       if(!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+      // defensive: if GAS ever returns HTML (eg login), surface it
+      const ct = (res.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("json")) {
+        const txt = await res.text();
+        throw new Error(`Non-JSON from server. First bytes: ${txt.slice(0,120)}`);
+      }
+
       const j = await res.json();
       const rows = Array.isArray(j) ? j : (j.data || j.rows || []);
-      if(!Array.isArray(rows)) throw new Error("Unexpected JSON structure");
-      document.getElementById("badge-source").textContent = "Apps Script JSON • refreshed " + new Date().toLocaleTimeString();
+      if(!Array.isArray(rows)) throw new Error("Unexpected JSON shape");
+
+      document.getElementById("badge-source").textContent = "Apps Script JSON";
       log(`Loaded ${rows.length} rows`);
       return rows;
-    }catch(e){ lastErr=e; log("Fetch failed:", String(e)); }
+    }catch(e){
+      lastErr = e;
+      log("Fetch failed:", String(e));
+    }
   }
   throw lastErr || new Error("All JSON sources failed");
 }
+
 
 function parseDateAny(v){
   if(!v) return null;
