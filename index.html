@@ -235,20 +235,30 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" referrerpolicy="no-referrer"></script>
 
-  <!-- Kill any stale service workers + caches (prevents offline caching surprises) -->
-  <script>
-    (function(){
-      if('serviceWorker' in navigator){
-        navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
-      }
-      if (window.caches && caches.keys) {
-        caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
-      }
-      // Always load fresh JS files with a cache-busting version
-      const v = Date.now();
-      const s1 = document.createElement('script'); s1.src = 'config.js?v='+v; document.body.appendChild(s1);
-      const s2 = document.createElement('script'); s2.src = 'app.js?v='+v; document.body.appendChild(s2);
-    })();
-  </script>
+<script>
+  // Optional: clear any old SW/caches once (prevents stale JS)
+  (function(){
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+    }
+    if (window.caches && caches.keys) {
+      caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+    }
+  })();
+
+  // ✅ Ensure config loads before app (and cache-bust both)
+  (function(){
+    const v = Date.now();
+    const s1 = document.createElement('script');
+    s1.src = 'config.js?v=' + v;
+    s1.onload = function(){
+      const s2 = document.createElement('script');
+      s2.src = 'app.js?v=' + v;
+      document.body.appendChild(s2);
+    };
+    document.body.appendChild(s1);
+  })();
+</script>
+
 </body>
 </html>
