@@ -3,8 +3,9 @@
  * - Loads JSON (simple GET with cache-bust)
  * - Normalizes rows
  * - Filters (Type/Category/Sub-category/Month/Supplier)
- * - KPIs, Top Clients A/B, Top Suppliers, Best Sellers, Trend
- * - Diagnostics: shows ONLY the last invoice number (InvoiceFile) for A & B
+ * - KPIs, Top Clients A/B, Top Suppliers, Best Sellers
+ * - Per Month Sales table (filters applied)
+ * - Diagnostics: biggest XXX per folder (INV-XXX-YYYY / IPEC Invoice XXX-YYYY)
  ****************************************************/
 
 // ---------- utils ----------
@@ -13,7 +14,9 @@ const fmtMoney = n => (n??0).toLocaleString(undefined,{maximumFractionDigits:2})
 const fmtInt   = n => (n??0).toLocaleString();
 const fmtDate  = d => !d ? "—" : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const esc      = s => String(s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const ymLabel  = ym => ym || "—";
 
+// parse number strings
 function num(x){
   if(x==null) return 0;
   let s=String(x).trim().replace(/[^\d.,-]/g,"");
@@ -28,7 +31,7 @@ const typeLabel = t =>
   (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":
   (String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
 
-// thumbnails (unused in diagnostics but used in Best Sellers)
+// thumbnails (used in Best Sellers)
 function imgHTML(code, alt=""){
   const base = window.IMAGES_BASE || "./public/images/";
   const exts = window.IMAGE_EXTS || [".webp",".jpg",".png"];
@@ -129,7 +132,7 @@ function normalize(rows){
 
     const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : "";
 
-    // prefer the human-readable invoice number from the sheet
+    // human-readable invoice number from the sheet
     const invFile =
       r.InvoiceFile || r["Invoice File"] || r["Invoice file"] ||
       r.InvoiceName || r["Invoice Name"] || r["Invoice #"] || r["Invoice n°"] || "";
@@ -149,7 +152,6 @@ function normalize(rows){
       category: r.Category || "",
       subcat:   r["Sub-category"] || r.Subcategory || "",
 
-      // keep for diagnostics
       invoiceFile: invFile,
       invoiceName: r.InvoiceName || "",
 
@@ -245,25 +247,27 @@ function aggregate(all){
   const topSup_value = Object.entries(supVal).sort((x,y)=>y[1]-x[1]).slice(0,20);
   const topSup_count = Object.entries(supCnt).sort((x,y)=>y[1]-x[1]).slice(0,20);
 
-  // Best sellers
-  const byVal={}, byQty={}, meta={};
+  // -------- Per-month aggregates (for table) --------
+  const monthAgg = {}; // ym -> {turnover, qty, invSet:Set}
   all.forEach(r=>{
-    if(!r.code) return;
-    byVal[r.code]=(byVal[r.code]||0)+r.line;
-    byQty[r.code]=(byQty[r.code]||0)+r.qty;
-    if(!meta[r.code]) meta[r.code]={desc:r.desc,category:r.category,subcat:r.subcat};
+    if(!r.ym) return;
+    const m = monthAgg[r.ym] || (monthAgg[r.ym] = {turnover:0, qty:0, invSet:new Set()});
+    m.turnover += (r.line||0);
+    m.qty      += (r.qty||0);
+    if (r.invoice) m.invSet.add(r.invoice);
   });
-  const bestVal = Object.entries(byVal).sort((x,y)=>y[1]-x[1]).slice(0,20).map(([code,val])=>({code,val,...meta[code]}));
-  const bestQty = Object.entries(byQty).sort((x,y)=>y[1]-x[1]).slice(0,20).map(([code,qty])=>({code,qty,...meta[code]}));
-
-  // Monthly trend
-  const monthly = {}; all.forEach(r=>{ if(!r.ym) return; monthly[r.ym]=(monthly[r.ym]||0)+r.line; });
-  const months = Object.keys(monthly).sort();
+  const months = Object.keys(monthAgg).sort();
+  const monthRows = months.map(ym => {
+    const m = monthAgg[ym];
+    const invCount = m.invSet.size;
+    const avgB = invCount ? (m.turnover / invCount) : 0;
+    return { ym, invoices: invCount, qty: m.qty, turnover: m.turnover, avg: avgB };
+  });
 
   return { invoices, turnover, totalQty, avg,
            topA_value, topB_value, topA_count, topB_count,
            topSup_value, topSup_count,
-           bestVal, bestQty, months, monthly };
+           monthRows };
 }
 
 // ---------- renderers ----------
@@ -305,12 +309,30 @@ function renderBestItems(el, list, mode){
   });
 }
 
+// -------- Per Month Sales table --------
+function renderMonthTable(rows){
+  const tbody = document.querySelector('#month-table tbody');
+  if(!tbody){ log("No #month-table tbody"); return; }
+  tbody.innerHTML = "";
+  rows.forEach(r=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${esc(ymLabel(r.ym))}</td>
+      <td>${fmtInt(r.invoices)}</td>
+      <td>${fmtInt(r.qty)}</td>
+      <td>${fmtMoney(r.turnover)}</td>
+      <td>${fmtMoney(r.avg)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
 /* ======================= Diagnostics (max XXX per folder) ======================= */
 
 // Extract { seq, snippet } from any invoice-like string
-// - matches "INV-371-0625 ..."  -> {seq:371, snippet:"INV-371-0625"}
-// - matches "IPEC Invoice 016-0225 ..." -> {seq:16, snippet:"IPEC Invoice 016-0225"}
-// - fallback: first "digits-digits4" pattern -> {seq:..., snippet:"NNN-YYYY"}
+// - "INV-371-0625 ..."              -> {seq:371, snippet:"INV-371-0625"}
+// - "IPEC Invoice 016-0225 ..."     -> {seq:16,  snippet:"IPEC Invoice 016-0225"}
+// - Fallback "NNN-YYYY"             -> {seq:NNN, snippet:"NNN-YYYY"}
 function extractSeqSnippet(s) {
   const str = String(s || "");
 
@@ -322,7 +344,7 @@ function extractSeqSnippet(s) {
   m = /IPEC\s*Invoice[^\d]*?(\d{1,5})[^\d]*?(\d{4})/i.exec(str);
   if (m) return { seq: parseInt(m[1], 10), snippet: `IPEC Invoice ${m[1]}-${m[2]}` };
 
-  // Generic NNN-YYYY (first occurrence)
+  // Generic NNN-YYYY
   m = /(\d{1,5})\s*[-_]\s*(\d{4})/.exec(str);
   if (m) return { seq: parseInt(m[1], 10), snippet: `${m[1]}-${m[2]}` };
 
@@ -342,9 +364,10 @@ function maxSeqByType(all, type) {
   return best;
 }
 
+// Render one row per folder showing the biggest XXX and its snippet
 function renderLatestDiagnostics(all) {
-  const A = maxSeqByType(all, "A");   // Folder A: INV-XXX-YYYY
-  const B = maxSeqByType(all, "B");   // Folder B: IPEC Invoice XXX-YYYY
+  const A = maxSeqByType(all, "A");   // Folder A: expects "INV-XXX-YYYY"
+  const B = maxSeqByType(all, "B");   // Folder B: expects "IPEC Invoice XXX-YYYY"
 
   function fill(one, elId) {
     const el = document.getElementById(elId);
@@ -363,50 +386,14 @@ function renderLatestDiagnostics(all) {
   fill(A, "diag-lastA");
   fill(B, "diag-lastB");
 }
+
+// ✅ Back-compat alias (prevents "latestInvoicesByType is not defined")
+function latestInvoicesByType(all, type, limit = 1) {
+  const best = maxSeqByType(all, type);
+  return best ? [best] : [];
+}
 /* ===================== end Diagnostics (max XXX per folder) ===================== */
 
-function renderLatestDiagnostics(all){
-  const A = latestInvoicesByType(all, "A", 1);
-  const B = latestInvoicesByType(all, "B", 1);
-
-  function fill(list, elId){
-    const el = document.getElementById(elId);
-    if(!el) return;
-    el.innerHTML = "";
-    list.forEach((o) => {
-      const li = document.createElement("li");
-      li.className = "li";
-      li.innerHTML = `<div class="grow">
-          <div class="name">${esc(o.display || "—")}</div>
-          <div class="muted">${fmtDate(o.date)}</div>
-        </div>
-        <div class="value">${fmtMoney(o.sum)}</div>`;
-      el.appendChild(li);
-    });
-  }
-  fill(A, "diag-lastA");
-  fill(B, "diag-lastB");
-}
-
-// Trend chart
-let trendChart;
-function renderTrend(months, monthly){
-  const el = document.getElementById("trendChart");
-  if (!el) { log("No #trendChart element; skipping trend."); return; }
-  if (!window.Chart) { log("Chart.js not loaded; skipping trend."); return; }
-
-  const labels = months;
-  const data = months.map(m => monthly[m] || 0);
-  const ctx = el.getContext("2d");
-  if (!ctx) { log("No 2D context; skipping trend."); return; }
-
-  if (trendChart) trendChart.destroy();
-  trendChart = new Chart(ctx, {
-    type: "line",
-    data: { labels, datasets: [{ label: "Turnover", data, tension: 0.25 }] },
-    options: { plugins:{legend:{display:false}}, scales:{ x:{ticks:{maxRotation:0}}, y:{beginAtZero:true} } }
-  });
-}
 
 // ---------- collapsibles (optional) ----------
 function wireCollapsibles(){
@@ -431,7 +418,7 @@ async function main(){
     buildFilters(all);
     const grand = aggregate(all);
 
-    // diagnostics (full dataset)
+    // diagnostics (based on full dataset)
     renderLatestDiagnostics(all);
 
     const state = { clientsA:"value", clientsB:"value", suppliers:"value", items:"value" };
@@ -461,8 +448,8 @@ async function main(){
       renderBestItems(document.getElementById("list-items"),
         state.items==="value" ? agg.bestVal : agg.bestQty, state.items);
 
-      // Trend
-      renderTrend(agg.months, agg.monthly);
+      // Per Month Sales table
+      renderMonthTable(agg.monthRows);
     }
 
     // Filter events

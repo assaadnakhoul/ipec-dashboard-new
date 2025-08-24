@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <!-- No-cache hints for browsers/proxies -->
+
+  <!-- No-cache hints -->
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -12,8 +13,6 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-  <link rel="preconnect" href="https://script.google.com" crossorigin>
-  <link rel="dns-prefetch" href="https://script.google.com">
 
   <style>
     :root{ --card-bg:#fff; --card-br:#eaecef; --ink:#212529; --muted:#6b7280; --accent:#2a72ff; }
@@ -65,7 +64,14 @@
     #card-best{height:500px;display:flex;flex-direction:column}
     #card-best .list.scroll{flex:1;max-height:none;overflow:auto}
 
-    /* ---------- Responsive (mobile-first) ---------- */
+    /* Table */
+    .table-wrap{overflow:auto;border-radius:12px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px;border-bottom:1px solid var(--card-br);text-align:right;font-size:14px}
+    th:first-child,td:first-child{text-align:left}
+    thead th{background:#f8fafc;color:#374151;font-weight:600}
+
+    /* ---------- Responsive ---------- */
     @media (max-width: 1024px){
       .kpis{grid-template-columns:repeat(2,1fr)}
       .filters{grid-template-columns:repeat(3,1fr)}
@@ -74,10 +80,10 @@
       .wrap{padding:12px}
       .kpis{grid-template-columns:1fr}
       .filters{grid-template-columns:repeat(2,1fr)}
-      .sel{padding:12px}
-      .row.cards-3{grid-template-columns:1fr} /* stack the 3 cards */
+      .row.cards-3{grid-template-columns:1fr} /* stack three cards */
       .list.scroll{max-height:260px}
       .kpi .num{font-size:36px}
+      th,td{padding:8px}
     }
   </style>
 </head>
@@ -138,7 +144,7 @@
       </div>
     </section>
 
-    <!-- Top Clients + Suppliers (3 cards, stack on mobile) -->
+    <!-- Top Clients + Suppliers -->
     <section class="row cards-3" style="grid-template-columns:1fr 1fr 1fr; margin-top:16px">
       <div class="card" data-collapsible id="card-topA">
         <div class="section-title">
@@ -150,9 +156,7 @@
             </div>
           </div>
         </div>
-        <div class="body">
-          <ol id="list-topA" class="list scroll"></ol>
-        </div>
+        <div class="body"><ol id="list-topA" class="list scroll"></ol></div>
       </div>
 
       <div class="card" data-collapsible id="card-topB">
@@ -165,9 +169,7 @@
             </div>
           </div>
         </div>
-        <div class="body">
-          <ol id="list-topB" class="list scroll"></ol>
-        </div>
+        <div class="body"><ol id="list-topB" class="list scroll"></ol></div>
       </div>
 
       <div class="card" data-collapsible id="card-topSup">
@@ -180,9 +182,7 @@
             </div>
           </div>
         </div>
-        <div class="body">
-          <ol id="list-topSup" class="list scroll"></ol>
-        </div>
+        <div class="body"><ol id="list-topSup" class="list scroll"></ol></div>
       </div>
     </section>
 
@@ -200,14 +200,27 @@
       </div>
     </section>
 
-    <!-- Trend -->
+    <!-- Per Month Sales (replaces the chart) -->
     <section style="margin-top:16px">
       <div class="card">
         <div class="section-title">
-          <strong>Monthly Turnover Trend</strong>
-          <span class="tiny">Date extracted from column O</span>
+          <strong>Per Month Sales</strong>
+          <span class="tiny">Totals reflect current filters</span>
         </div>
-        <canvas id="trendChart" height="110"></canvas>
+        <div class="table-wrap">
+          <table id="month-table">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th>Invoices</th>
+                <th>Total Qty</th>
+                <th>Turnover</th>
+                <th>Avg. Basket</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -215,50 +228,39 @@
     <section class="card" id="diag" style="margin-top:16px">
       <div class="section-title">
         <strong>Diagnostics</strong>
-        <span class="tiny">Only for debugging. Shows latest fetched invoices per folder.</span>
+        <span class="tiny">Shows biggest invoice XXX per folder.</span>
       </div>
-
       <div class="row" style="grid-template-columns:1fr 1fr; gap:16px; margin:8px 12px">
         <div>
-          <div class="tiny" style="margin-bottom:6px;"><strong>Last Invoices — OUT (Folder A)</strong></div>
-          <ol id="diag-lastA" class="list scroll" style="max-height:180px"></ol>
+          <div class="tiny" style="margin-bottom:6px;"><strong>Max — OUT (Folder A)</strong></div>
+          <ol id="diag-lastA" class="list scroll" style="max-height:120px"></ol>
         </div>
         <div>
-          <div class="tiny" style="margin-bottom:6px;"><strong>Last Invoices — IN (Folder B)</strong></div>
-          <ol id="diag-lastB" class="list scroll" style="max-height:180px"></ol>
+          <div class="tiny" style="margin-bottom:6px;"><strong>Max — IN (Folder B)</strong></div>
+          <ol id="diag-lastB" class="list scroll" style="max-height:120px"></ol>
         </div>
       </div>
-
-      <pre id="diag-log" class="tiny" style="max-height:180px;overflow:auto;background:#f8fafc;border-radius:12px;padding:12px"></pre>
+      <pre id="diag-log" class="tiny" style="max-height:160px;overflow:auto;background:#f8fafc;border-radius:12px;padding:12px"></pre>
     </section>
   </div>
 
+  <!-- (Chart.js no longer required for this section, but safe to keep) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" referrerpolicy="no-referrer"></script>
 
-<script>
-  // Optional: clear any old SW/caches once (prevents stale JS)
-  (function(){
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
-    }
-    if (window.caches && caches.keys) {
-      caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
-    }
-  })();
+  <!-- Clear any old SW/caches once to avoid stale JS -->
+  <script>
+    (function(){
+      if('serviceWorker' in navigator){
+        navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+      }
+      if (window.caches && caches.keys) {
+        caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+      }
+    })();
+  </script>
 
-  // ✅ Ensure config loads before app (and cache-bust both)
-  (function(){
-    const v = Date.now();
-    const s1 = document.createElement('script');
-    s1.src = 'config.js?v=' + v;
-    s1.onload = function(){
-      const s2 = document.createElement('script');
-      s2.src = 'app.js?v=' + v;
-      document.body.appendChild(s2);
-    };
-    document.body.appendChild(s1);
-  })();
-</script>
-
+  <!-- Load config first, then app (with cache-bust) -->
+  <script src="config.js?v=61"></script>
+  <script src="app.js?v=61"></script>
 </body>
 </html>
