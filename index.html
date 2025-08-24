@@ -2,6 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <!-- No-cache hints for browsers/proxies -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>IPEC Sales Dashboard</title>
 
@@ -9,6 +14,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
   <link rel="preconnect" href="https://script.google.com" crossorigin>
   <link rel="dns-prefetch" href="https://script.google.com">
+
   <style>
     :root{ --card-bg:#fff; --card-br:#eaecef; --ink:#212529; --muted:#6b7280; --accent:#2a72ff; }
     html,body{margin:0;background:#f6f7fb;color:var(--ink);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
@@ -29,20 +35,19 @@
     /* Filters */
     .filters{grid-template-columns:repeat(5,1fr)}
     .row.filters .card{height:170px;display:flex;flex-direction:column;justify-content:center}
-    .row.filters .sel{width:100%}
     .rset{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .sel{padding:10px 12px;border:1px solid var(--card-br);border-radius:12px;font-size:14px;background:#fff}
+    .sel{padding:12px 14px;border:1px solid var(--card-br);border-radius:12px;font-size:15px;background:#fff}
 
     /* Lists / pills */
     .pillset{display:inline-flex;background:#f1f3f5;border-radius:999px;padding:3px;gap:3px}
-    .pill{border:0;background:transparent;padding:8px 14px;border-radius:999px;font-size:14px;cursor:pointer}
+    .pill{border:0;background:transparent;padding:10px 16px;border-radius:999px;font-size:14px;cursor:pointer;min-height:44px}
     .pill[aria-pressed="true"]{background:#fff;border:1px solid var(--card-br)}
     .tiny{font-size:12px;color:var(--muted)}
     .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 
     .list{max-height:none;overflow:visible}
     .list.scroll{max-height:200px;overflow:auto}
-    .li{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--card-br)}
+    .li{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--card-br)}
     .li:last-child{border-bottom:0}
     .thumb{width:64px;height:64px;flex:0 0 64px;border-radius:12px;border:1px solid var(--card-br);object-fit:contain;background:#fff}
     .grow{min-width:0;flex:1}
@@ -50,7 +55,7 @@
     .muted{color:var(--muted);font-size:12px;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
     .value{margin-left:auto;font-weight:700}
 
-    .badges{display:flex;gap:8px}
+    .badges{display:flex;gap:8px;flex-wrap:wrap}
     .badge{display:inline-flex;align-items:center;gap:6px;background:#eef2ff;color:#1e40af;border-radius:999px;padding:6px 10px;font-size:12px}
 
     .section-title .toggle{border:1px solid var(--card-br);background:#fff;font-size:12px;padding:6px 10px;border-radius:999px;cursor:pointer}
@@ -59,11 +64,26 @@
     /* Best Sellers card: taller */
     #card-best{height:500px;display:flex;flex-direction:column}
     #card-best .list.scroll{flex:1;max-height:none;overflow:auto}
+
+    /* ---------- Responsive (mobile-first) ---------- */
+    @media (max-width: 1024px){
+      .kpis{grid-template-columns:repeat(2,1fr)}
+      .filters{grid-template-columns:repeat(3,1fr)}
+    }
+    @media (max-width: 720px){
+      .wrap{padding:12px}
+      .kpis{grid-template-columns:1fr}
+      .filters{grid-template-columns:repeat(2,1fr)}
+      .sel{padding:12px}
+      .row.cards-3{grid-template-columns:1fr} /* stack the 3 cards */
+      .list.scroll{max-height:260px}
+      .kpi .num{font-size:36px}
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap">
       <div>
         <h1>IPEC Sales Dashboard</h1>
         <p class="sub">Large KPIs • quick filters • neat thumbnails • trends by month</p>
@@ -118,8 +138,8 @@
       </div>
     </section>
 
-    <!-- Top Clients (now 3 columns) -->
-    <section class="row" style="grid-template-columns:1fr 1fr 1fr; margin-top:16px">
+    <!-- Top Clients + Suppliers (3 cards, stack on mobile) -->
+    <section class="row cards-3" style="grid-template-columns:1fr 1fr 1fr; margin-top:16px">
       <div class="card" data-collapsible id="card-topA">
         <div class="section-title">
           <div><strong>Top Clients — INVOICE OUT</strong> <span class="tiny">(top 20)</span></div>
@@ -150,7 +170,6 @@
         </div>
       </div>
 
-      <!-- NEW: Top Suppliers -->
       <div class="card" data-collapsible id="card-topSup">
         <div class="section-title">
           <div><strong>Top Suppliers</strong> <span class="tiny">(top 20)</span></div>
@@ -195,14 +214,41 @@
     <!-- Diagnostics -->
     <section class="card" id="diag" style="margin-top:16px">
       <div class="section-title">
-        <strong>Diagnostics</strong><span class="tiny">Only for debugging.</span>
+        <strong>Diagnostics</strong>
+        <span class="tiny">Only for debugging. Shows latest fetched invoices per folder.</span>
       </div>
-      <pre id="diag-log" class="tiny" style="max-height:220px;overflow:auto;background:#f8fafc;border-radius:12px;padding:12px"></pre>
+
+      <div class="row" style="grid-template-columns:1fr 1fr; gap:16px; margin:8px 12px">
+        <div>
+          <div class="tiny" style="margin-bottom:6px;"><strong>Last Invoices — OUT (Folder A)</strong></div>
+          <ol id="diag-lastA" class="list scroll" style="max-height:180px"></ol>
+        </div>
+        <div>
+          <div class="tiny" style="margin-bottom:6px;"><strong>Last Invoices — IN (Folder B)</strong></div>
+          <ol id="diag-lastB" class="list scroll" style="max-height:180px"></ol>
+        </div>
+      </div>
+
+      <pre id="diag-log" class="tiny" style="max-height:180px;overflow:auto;background:#f8fafc;border-radius:12px;padding:12px"></pre>
     </section>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="config.js?v=52"></script>
-  <script src="app.js?v=52"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" referrerpolicy="no-referrer"></script>
+
+  <!-- Kill any stale service workers + caches (prevents offline caching surprises) -->
+  <script>
+    (function(){
+      if('serviceWorker' in navigator){
+        navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+      }
+      if (window.caches && caches.keys) {
+        caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+      }
+      // Always load fresh JS files with a cache-busting version
+      const v = Date.now();
+      const s1 = document.createElement('script'); s1.src = 'config.js?v='+v; document.body.appendChild(s1);
+      const s2 = document.createElement('script'); s2.src = 'app.js?v='+v; document.body.appendChild(s2);
+    })();
+  </script>
 </body>
 </html>

@@ -1,16 +1,17 @@
 /****************************************************
- * IPEC Sales Dashboard — full app.js
- * - Loads JSON from Apps Script
+ * IPEC Sales Dashboard — app.js
+ * - Loads JSON (cache-busted, no-store)
  * - Normalizes rows
- * - Builds filters (Type, Category, Sub-category, Month, Supplier)
- * - Renders KPIs, Top Clients, Top Suppliers, Best Sellers, Trend
- * - Dynamic "grand total" & Turnover % of Total KPI
+ * - Filters (Type/Category/Sub-category/Month/Supplier)
+ * - KPIs, Top Clients A/B, Top Suppliers, Best Sellers, Trend
+ * - Diagnostics: latest invoices for Folder A (OUT) & Folder B (IN)
  ****************************************************/
 
 // ---------- utils ----------
 const log = (...a)=>{console.log(...a); const el=document.getElementById("diag-log"); if(el){el.textContent+=a.map(x=>typeof x==='string'?x:JSON.stringify(x,null,2)).join(" ")+"\n";}};
 const fmtMoney = n => (n??0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtInt   = n => (n??0).toLocaleString();
+const fmtDate  = d => !d ? "—" : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
 function num(x){
   if(x==null) return 0;
@@ -26,7 +27,7 @@ const typeLabel = t =>
   (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":
   (String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
 
-// images with fallback
+// thumbnail helper
 function imgHTML(code, alt=""){
   const base = window.IMAGES_BASE || "./public/images/";
   const exts = window.IMAGE_EXTS || [".webp",".jpg",".png"];
@@ -42,14 +43,20 @@ async function fetchDataJSON(){
   let lastErr;
   for(const url of window.JSON_URLS){
     try{
-      log("Fetching JSON:", url);
       const bust = (url.includes('?') ? '&' : '?') + 't=' + Date.now();
-      const res = await fetch(url + bust, { method:"GET", mode:"cors", credentials:"omit", cache:"no-store", headers:{ "Accept":"application/json" } });
+      log("Fetching JSON:", url);
+      const res = await fetch(url + bust, {
+        method:"GET",
+        mode:"cors",
+        credentials:"omit",
+        cache:"no-store",
+        headers:{ "Accept":"application/json", "Pragma":"no-cache", "Cache-Control":"no-cache" }
+      });
       if(!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
       const j = await res.json();
       const rows = Array.isArray(j) ? j : (j.data || j.rows || []);
       if(!Array.isArray(rows)) throw new Error("Unexpected JSON structure");
-      document.getElementById("badge-source").textContent="Apps Script JSON";
+      document.getElementById("badge-source").textContent = "Apps Script JSON • refreshed " + new Date().toLocaleTimeString();
       log(`Loaded ${rows.length} rows`);
       return rows;
     }catch(e){ lastErr=e; log("Fetch failed:", String(e)); }
@@ -60,7 +67,6 @@ async function fetchDataJSON(){
 function parseDateAny(v){
   if(!v) return null;
   if (v instanceof Date) return isNaN(v) ? null : v;
-
   let s = String(v).trim();
 
   // Excel serial
@@ -70,7 +76,6 @@ function parseDateAny(v){
     const d = new Date(base.getTime() + serial*86400000);
     return isNaN(d) ? null : d;
   }
-
   s = s.replace(/-/g,'/');
   const d1 = new Date(s);
   if (!isNaN(d1)) return d1;
@@ -81,6 +86,7 @@ function inferDateFromName(name){
   if (!name) return null;
   const s = String(name);
 
+  // INV-123-0125  => mmYY
   let m = /\bINV-\d+-(\d{4})\b/i.exec(s);
   if (m) {
     const mm = parseInt(m[1].slice(0,2),10);
@@ -88,7 +94,7 @@ function inferDateFromName(name){
     const yr = 2000 + yy;
     return new Date(yr, mm-1, 1);
   }
-
+  // ...-240711 (YYMMDD)
   m = /-(\d{6})(?!\d)/.exec(s);
   if (m) {
     const yy = parseInt(m[1].slice(0,2),10);
@@ -98,7 +104,7 @@ function inferDateFromName(name){
     const d = new Date(yr, mm-1, dd);
     if (!isNaN(d)) return d;
   }
-
+  // IPEC Invoice 123-0125
   m = /IPEC\s*Invoice[^\d]*\d+\s*-\s*(\d{4})/i.exec(s);
   if (m) {
     const mm = parseInt(m[1].slice(0,2),10);
@@ -213,7 +219,7 @@ function aggregate(all){
   const topA_count = Object.entries(cntA).sort((x,y)=>y[1]-x[1]).slice(0,20);
   const topB_count = Object.entries(cntB).sort((x,y)=>y[1]-x[1]).slice(0,20);
 
-  // Top suppliers (value + # distinct invoices)
+  // Top suppliers
   const supVal = {}, supCnt = {};
   const supSeen = new Map(); // supplier -> Set(invoices)
   all.forEach(r=>{
@@ -288,6 +294,41 @@ function renderBestItems(el, list, mode){
   });
 }
 
+// ---------- diagnostics: latest invoices per type ----------
+function latestInvoicesByType(all, type, limit=10){
+  const map = new Map(); // invoice -> {name,sum,date}
+  all.filter(r=>r.type===type && r.invoice).forEach(r=>{
+    const d = r.invDate || inferDateFromName(r.invoice) || null;
+    if(!map.has(r.invoice)) map.set(r.invoice, {name:r.invoice, sum:0, date:d});
+    const o = map.get(r.invoice);
+    o.sum += (r.line||0);
+    if(d && (!o.date || d>o.date)) o.date = d;
+  });
+  return Array.from(map.values()).sort((a,b)=> (b.date?.getTime()||0) - (a.date?.getTime()||0)).slice(0,limit);
+}
+function renderLatestDiagnostics(all){
+  const A = latestInvoicesByType(all, "A", 10);
+  const B = latestInvoicesByType(all, "B", 10);
+
+  function fill(list, elId){
+    const el = document.getElementById(elId);
+    if(!el) return;
+    el.innerHTML = "";
+    list.forEach((o,i)=>{
+      const li = document.createElement("li");
+      li.className="li";
+      li.innerHTML = `<div class="grow">
+          <div class="name">${i+1}. ${o.name}</div>
+          <div class="muted">${fmtDate(o.date)}</div>
+        </div>
+        <div class="value">${fmtMoney(o.sum)}</div>`;
+      el.appendChild(li);
+    });
+  }
+  fill(A, "diag-lastA");
+  fill(B, "diag-lastB");
+}
+
 // Trend chart
 let trendChart;
 function renderTrend(months, monthly){
@@ -330,6 +371,9 @@ async function main(){
 
     buildFilters(all);
     const grand = aggregate(all);
+
+    // render diagnostics once (based on the full dataset)
+    renderLatestDiagnostics(all);
 
     const state = { clientsA:"value", clientsB:"value", suppliers:"value", items:"value" };
 
