@@ -3,93 +3,124 @@
 <head>
   <meta charset="utf-8" />
 
-  <!-- No-cache hints -->
+  <!-- Prevent browser caching of the data/app -->
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
 
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Mobile: no auto-zoom, safe-area for notches -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f6f7fb">
+
   <title>IPEC Sales Dashboard</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
 
   <style>
-    :root{ --card-bg:#fff; --card-br:#eaecef; --ink:#212529; --muted:#6b7280; --accent:#2a72ff; }
-    html,body{margin:0;background:#f6f7fb;color:var(--ink);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-    .wrap{max-width:1100px;margin:0 auto;padding:20px}
-    h1{font-size:32px;font-weight:800;margin:0 0 4px}
-    .sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+    /* ============ Design tokens (mobile-first) ============ */
+    :root{
+      --bg:#f6f7fb;
+      --card:#fff;
+      --br:#eaecef;
+      --ink:#111827;
+      --muted:#6b7280;
+      --accent:#2a72ff;
 
-    .row{display:grid;gap:16px}
-    .card{background:var(--card-bg);border:1px solid var(--card-br);border-radius:16px;padding:4px}
+      --radius:16px;
+      --gap:14px;                 /* mobile gap */
+      --pad:14px;                 /* mobile page padding */
 
-    /* KPIs */
-    .kpis{grid-template-columns:repeat(4,1fr)}
-    .kpis.kpis-extra{grid-template-columns:repeat(1,1fr)}
+      --tap-size:48px;            /* ≥44px for fingers */
+      --fs-12:12px;
+      --fs-13:13px;
+      --fs-14:14px;
+      --fs-16:16px;
+      --fs-18:clamp(16px, 2.7vw, 18px);
+      --fs-24:clamp(18px, 3.8vw, 24px);
+      --fs-kpi:clamp(28px, 9vw, 44px); /* big, responsive numbers */
+    }
+
+    /* Desktop tune-up */
+    @media (min-width: 960px){
+      :root{ --gap:16px; --pad:20px; }
+    }
+
+    html,body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;touch-action:manipulation}
+    .wrap{max-width:1200px;margin:0 auto;padding:calc(env(safe-area-inset-top) + var(--pad)) var(--pad) calc(env(safe-area-inset-bottom) + var(--pad));}
+
+    h1{font-size:var(--fs-24);font-weight:800;margin:0 0 4px}
+    .sub{color:var(--muted);font-size:var(--fs-13);margin:0 0 12px}
+
+    .row{display:grid;gap:var(--gap)}
+    .card{background:var(--card);border:1px solid var(--br);border-radius:var(--radius);padding:10px}
+
+    /* ===== KPIs ===== */
+    .kpis{grid-template-columns:1fr 1fr}                 /* phones: 2-up */
+    @media (min-width: 720px){ .kpis{grid-template-columns:repeat(4,1fr)} } /* desktop: 4-up */
     .kpi{text-align:center}
-    .kpi .label{font-size:13px;color:var(--muted)}
-    .kpi .num{font-size:44px;font-weight:800;line-height:1.05;letter-spacing:-.3px}
+    .kpi .label{font-size:var(--fs-13);color:var(--muted)}
+    .kpi .num{font-size:var(--fs-kpi);font-weight:800;line-height:1.05;letter-spacing:-.3px}
 
-    /* Filters */
-    .filters{grid-template-columns:repeat(5,1fr)}
-    .row.filters .card{height:170px;display:flex;flex-direction:column;justify-content:center}
+    /* ===== Filters ===== */
+    .filters{grid-template-columns:1fr}                   /* phones: one per row */
+    @media (min-width: 960px){ .filters{grid-template-columns:repeat(5,1fr)} } /* desktop: 5 columns */
+    .row.filters .card{min-height:unset;display:flex;flex-direction:column;gap:8px}
+    .label{font-size:var(--fs-13);color:var(--muted)}
     .rset{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .sel{padding:12px 14px;border:1px solid var(--card-br);border-radius:12px;font-size:15px;background:#fff}
+    .sel, .rset .sel input{font-size:var(--fs-16)}        /* prevent zoom on iOS */
+    .sel{padding:12px 14px;border:1px solid var(--br);border-radius:12px;background:#fff;min-height:var(--tap-size);width:100%}
 
-    /* Lists / pills */
-    .pillset{display:inline-flex;background:#f1f3f5;border-radius:999px;padding:3px;gap:3px}
-    .pill{border:0;background:transparent;padding:10px 16px;border-radius:999px;font-size:14px;cursor:pointer;min-height:44px}
-    .pill[aria-pressed="true"]{background:#fff;border:1px solid var(--card-br)}
-    .tiny{font-size:12px;color:var(--muted)}
-    .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+    .seg{display:inline-flex;background:#eef2f7;border:1px solid var(--br);border-radius:999px;padding:3px;gap:3px}
+    .seg .pill{min-height:var(--tap-size);padding:10px 16px;border:0;border-radius:999px;background:transparent;font-size:var(--fs-14);cursor:pointer}
+    .seg .pill[aria-pressed="true"]{background:#fff;border:1px solid var(--br)}
 
+    /* ===== Lists / cards ===== */
+    .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:10px}
+    .tiny{font-size:var(--fs-12);color:var(--muted)}
     .list{max-height:none;overflow:visible}
-    .list.scroll{max-height:200px;overflow:auto}
-    .li{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--card-br)}
+    .list.scroll{max-height:48vh;overflow:auto}          /* tall, but scrolls on phones */
+    .li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--br)}
     .li:last-child{border-bottom:0}
-    .thumb{width:64px;height:64px;flex:0 0 64px;border-radius:12px;border:1px solid var(--card-br);object-fit:contain;background:#fff}
+    .thumb{width:68px;height:68px;flex:0 0 68px;border-radius:12px;border:1px solid var(--br);object-fit:contain;background:#fff}
     .grow{min-width:0;flex:1}
     .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .muted{color:var(--muted);font-size:12px;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+    .muted{color:var(--muted);font-size:var(--fs-12);display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
     .value{margin-left:auto;font-weight:700}
 
     .badges{display:flex;gap:8px;flex-wrap:wrap}
-    .badge{display:inline-flex;align-items:center;gap:6px;background:#eef2ff;color:#1e40af;border-radius:999px;padding:6px 10px;font-size:12px}
+    .badge{display:inline-flex;align-items:center;gap:6px;background:#eef2ff;color:#1e40af;border-radius:999px;padding:6px 10px;font-size:var(--fs-12)}
 
-    .section-title .toggle{border:1px solid var(--card-br);background:#fff;font-size:12px;padding:6px 10px;border-radius:999px;cursor:pointer}
-    .card.collapsed .body{display:none}
-
-    /* Best Sellers card: taller */
-    #card-best{height:500px;display:flex;flex-direction:column}
+    /* ===== Best Sellers card: taller for phones ===== */
+    #card-best{min-height:380px;display:flex;flex-direction:column}
     #card-best .list.scroll{flex:1;max-height:none;overflow:auto}
 
-    /* Table */
+    /* ===== 3 columns section ===== */
+    .cards-3{grid-template-columns:1fr}                   /* phones: stack */
+    @media (min-width: 900px){ .cards-3{grid-template-columns:1fr 1fr} } /* tablets: 2-up */
+    @media (min-width: 1200px){ .cards-3{grid-template-columns:1fr 1fr 1fr} } /* desktop: 3-up */
+
+    /* ===== Table (Per Month Sales) ===== */
     .table-wrap{overflow:auto;border-radius:12px}
     table{width:100%;border-collapse:collapse}
-    th,td{padding:10px;border-bottom:1px solid var(--card-br);text-align:right;font-size:14px}
+    th,td{padding:12px;border-bottom:1px solid var(--br);text-align:right;font-size:var(--fs-14)}
     th:first-child,td:first-child{text-align:left}
     thead th{background:#f8fafc;color:#374151;font-weight:600}
 
-    /* ---------- Responsive ---------- */
-    @media (max-width: 1024px){
-      .kpis{grid-template-columns:repeat(2,1fr)}
-      .filters{grid-template-columns:repeat(3,1fr)}
-    }
-    @media (max-width: 720px){
-      .wrap{padding:12px}
-      .kpis{grid-template-columns:1fr}
-      .filters{grid-template-columns:repeat(2,1fr)}
-      .row.cards-3{grid-template-columns:1fr} /* stack three cards */
-      .list.scroll{max-height:260px}
-      .kpi .num{font-size:36px}
-      th,td{padding:8px}
+    /* ===== Sticky page header badges on phones ===== */
+    .page-head{position:sticky;top:env(safe-area-inset-top);z-index:10;background:linear-gradient(180deg, rgba(246,247,251,.98), rgba(246,247,251,.86) 70%, transparent);backdrop-filter:saturate(180%) blur(4px);padding-bottom:6px;margin-bottom:6px}
+
+    /* ===== Reduce top/bottom whitespace on tiny phones ===== */
+    @media (max-width: 360px){
+      .wrap{padding-left:10px;padding-right:10px}
+      .badge{padding:5px 8px}
+      .thumb{width:60px;height:60px}
     }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <header style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap">
+    <header class="page-head" style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
       <div>
         <h1>IPEC Sales Dashboard</h1>
         <p class="sub">Large KPIs • quick filters • neat thumbnails • trends by month</p>
@@ -100,7 +131,7 @@
       </div>
     </header>
 
-    <!-- KPIs (row 1) -->
+    <!-- KPIs -->
     <section class="row kpis">
       <div class="card kpi"><div class="label">Total Turnover</div><div id="kpi-turnover" class="num">—</div></div>
       <div class="card kpi"><div class="label">Invoices</div><div id="kpi-invoices" class="num">—</div></div>
@@ -109,21 +140,21 @@
     </section>
 
     <!-- KPI (row 2): Turnover % of Total -->
-    <section class="row kpis kpis-extra" style="margin-top:12px">
-      <div class="card kpi">
+    <section class="row" style="margin-top:var(--gap)">
+      <div class="card kpi" style="text-align:center">
         <div class="label">Turnover % of Total</div>
         <div id="kpi-turnover-percent" class="num">—%</div>
       </div>
     </section>
 
     <!-- Filters -->
-    <section class="row filters" style="margin-top:16px">
+    <section class="row filters" style="margin-top:var(--gap)">
       <div class="card">
         <div class="label">Type</div>
-        <div class="rset">
-          <label class="sel"><input type="radio" name="type" value="ALL" checked> All</label>
-          <label class="sel"><input type="radio" name="type" value="A"> INVOICE OUT</label>
-          <label class="sel"><input type="radio" name="type" value="B"> INVOICE IN</label>
+        <div class="seg" role="tablist" aria-label="Type">
+          <button class="pill" data-mode="ALL"><label style="cursor:pointer"><input type="radio" name="type" value="ALL" checked style="display:none">All</label></button>
+          <button class="pill" data-mode="A"><label style="cursor:pointer"><input type="radio" name="type" value="A" style="display:none">INVOICE OUT</label></button>
+          <button class="pill" data-mode="B"><label style="cursor:pointer"><input type="radio" name="type" value="B" style="display:none">INVOICE IN</label></button>
         </div>
       </div>
       <div class="card">
@@ -145,63 +176,57 @@
     </section>
 
     <!-- Top Clients + Suppliers -->
-    <section class="row cards-3" style="grid-template-columns:1fr 1fr 1fr; margin-top:16px">
-      <div class="card" data-collapsible id="card-topA">
+    <section class="row cards-3" style="margin-top:var(--gap)">
+      <div class="card" id="card-topA">
         <div class="section-title">
           <div><strong>Top Clients — INVOICE OUT</strong> <span class="tiny">(top 20)</span></div>
-          <div class="right" style="display:flex;gap:12px;align-items:center">
-            <div class="pillset" id="clientsModeA">
-              <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-              <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
-            </div>
+          <div class="seg" id="clientsModeA">
+            <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
+            <button class="pill" data-mode="count"># Sales</button>
           </div>
         </div>
-        <div class="body"><ol id="list-topA" class="list scroll"></ol></div>
+        <ol id="list-topA" class="list scroll"></ol>
       </div>
 
-      <div class="card" data-collapsible id="card-topB">
+      <div class="card" id="card-topB">
         <div class="section-title">
           <div><strong>Top Clients — INVOICE IN</strong> <span class="tiny">(top 20)</span></div>
-          <div class="right" style="display:flex;gap:12px;align-items:center">
-            <div class="pillset" id="clientsModeB">
-              <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-              <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
-            </div>
+          <div class="seg" id="clientsModeB">
+            <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
+            <button class="pill" data-mode="count"># Sales</button>
           </div>
         </div>
-        <div class="body"><ol id="list-topB" class="list scroll"></ol></div>
+        <ol id="list-topB" class="list scroll"></ol>
       </div>
 
-      <div class="card" data-collapsible id="card-topSup">
+      <div class="card" id="card-topSup">
         <div class="section-title">
           <div><strong>Top Suppliers</strong> <span class="tiny">(top 20)</span></div>
-          <div class="right" style="display:flex;gap:12px;align-items:center">
-            <div class="pillset" id="suppliersMode">
-              <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-              <button class="pill" data-mode="count" aria-pressed="false"># Sales</button>
-            </div>
+          <div class="seg" id="suppliersMode">
+            <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
+            <button class="pill" data-mode="count"># Sales</button>
           </div>
         </div>
-        <div class="body"><ol id="list-topSup" class="list scroll"></ol></div>
+        <ol id="list-topSup" class="list scroll"></ol>
       </div>
     </section>
 
     <!-- Best Sellers -->
-    <section style="margin-top:16px">
+    <section style="margin-top:var(--gap)">
       <div class="card" id="card-best">
         <div class="section-title">
           <div><strong>Best Sellers (top 20)</strong></div>
-          <div class="pillset" id="itemsMode">
+          <div class="seg" id="itemsMode">
             <button class="pill" data-mode="value" aria-pressed="true">By Value</button>
-            <button class="pill" data-mode="qty" aria-pressed="false">By Qty</button>
+            <button class="pill" data-mode="qty">By Qty</button>
           </div>
         </div>
         <ul id="list-items" class="list scroll"></ul>
       </div>
     </section>
 
-    <!-- Per Month Sales (replaces the chart) -->
-    <section style="margin-top:16px">
+    <!-- Per Month Sales (table) -->
+    <section style="margin-top:var(--gap)">
       <div class="card">
         <div class="section-title">
           <strong>Per Month Sales</strong>
@@ -225,12 +250,12 @@
     </section>
 
     <!-- Diagnostics -->
-    <section class="card" id="diag" style="margin-top:16px">
+    <section class="card" id="diag" style="margin-top:var(--gap)">
       <div class="section-title">
         <strong>Diagnostics</strong>
         <span class="tiny">Shows biggest invoice XXX per folder.</span>
       </div>
-      <div class="row" style="grid-template-columns:1fr 1fr; gap:16px; margin:8px 12px">
+      <div class="row" style="grid-template-columns:1fr 1fr; gap:var(--gap); margin:8px 12px">
         <div>
           <div class="tiny" style="margin-bottom:6px;"><strong>Max — OUT (Folder A)</strong></div>
           <ol id="diag-lastA" class="list scroll" style="max-height:120px"></ol>
@@ -244,7 +269,7 @@
     </section>
   </div>
 
-  <!-- (Chart.js no longer required for this section, but safe to keep) -->
+  <!-- Scripts (same as before) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" referrerpolicy="no-referrer"></script>
 
   <!-- Clear any old SW/caches once to avoid stale JS -->
@@ -260,7 +285,21 @@
   </script>
 
   <!-- Load config first, then app (with cache-bust) -->
-  <script src="config.js?v=61"></script>
-  <script src="app.js?v=61"></script>
+  <script src="config.js?v=70"></script>
+  <script src="app.js?v=70"></script>
+
+  <!-- Make the segmented Type control toggle the radios - pure UX sugar -->
+  <script>
+    document.addEventListener('click', (e)=>{
+      const p = e.target.closest('.seg .pill');
+      if(!p) return;
+      const seg = p.parentElement;
+      // If this is the Type seg (first one), sync the hidden radio inputs:
+      const label = p.querySelector('input[name="type"]');
+      if (label) { label.checked = true; label.dispatchEvent(new Event('change', {bubbles:true})); }
+      // Visual pressed state for any seg
+      seg.querySelectorAll('.pill').forEach(b => b.setAttribute('aria-pressed', b===p ? 'true' : 'false'));
+    }, {passive:true});
+  </script>
 </body>
 </html>
