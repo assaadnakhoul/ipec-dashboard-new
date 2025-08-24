@@ -1,17 +1,15 @@
 /****************************************************
- * IPEC Sales Dashboard — app.js
- * - Loads JSON (simple GET with cache-bust)
- * - Normalizes rows
- * - Filters (Type/Category/Sub-category/Month/Supplier)
- * - KPIs, Top Clients A/B, Top Suppliers, Best Sellers
- * - Per Month Sales table (filters applied)
- * - Diagnostics: biggest XXX per folder + NAME (snippet + trailing name)
+ * IPEC Sales Dashboard — app.js (full drop-in)
  ****************************************************/
 
-// ---------- utils ----------
-const log = (...a)=>{console.log(...a); const el=document.getElementById("diag-log"); if(el){el.textContent+=a.map(x=>typeof x==='string'?x:JSON.stringify(x,null,2)).join(" ")+"\n";}};
-const fmtMoney = n => (n??0).toLocaleString(undefined,{maximumFractionDigits:2});
-const fmtInt   = n => (n??0).toLocaleString();
+/* --------------------- utils --------------------- */
+const log = (...a) => {
+  console.log(...a);
+  const el = document.getElementById("diag-log");
+  if (el) el.textContent += a.map(x => typeof x === 'string' ? x : JSON.stringify(x, null, 2)).join(" ") + "\n";
+};
+const fmtMoney = n => (n ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+const fmtInt   = n => (n ?? 0).toLocaleString();
 const fmtDate  = d => !d ? "—" : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const esc      = s => String(s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const ymLabel  = ym => ym || "—";
@@ -19,10 +17,10 @@ const ymLabel  = ym => ym || "—";
 function num(x){
   if(x==null) return 0;
   let s=String(x).trim().replace(/[^\d.,-]/g,"");
-  if(s.includes(",")&&s.includes(".")){
+  if(s.includes(",") && s.includes(".")){
     if(s.lastIndexOf(".")>s.lastIndexOf(",")) s=s.replace(/,/g,"");
     else s=s.replace(/\./g,"").replace(",",".");
-  } else if(s.includes(",")&&!s.includes(".")) s=s.replace(",",".");
+  } else if(s.includes(",") && !s.includes(".")) s=s.replace(",",".");
   else s=s.replace(/,/g,"");
   const n=Number(s); return isNaN(n)?0:n;
 }
@@ -30,17 +28,28 @@ const typeLabel = t =>
   (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":
   (String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
 
-// thumbnails (used in Best Sellers)
+// thumbnails for Best Sellers
 function imgHTML(code, alt=""){
   const base = window.IMAGES_BASE || "./public/images/";
   const exts = window.IMAGE_EXTS || [".webp",".jpg",".png"];
   if(!code) return `<div class="thumb"></div>`;
   const first = base+code+exts[0];
-  const onerr=exts.slice(1).map((ext,i)=>{const next=base+code+ext;return `this.onerror=${i===exts.length-2?"null":"function(){this.onerror=null;this.src='${next}'}"};this.src='${next}'`;}).join(";");
-  return `<img class="thumb" src="${first}" onerror="${onerr}" alt="${alt}">`;
+  // Try fallback extensions if first fails
+  const onerr = exts.slice(1).map((ext,i)=>{
+    const next = base+code+ext;
+    return `this.onerror=${i===exts.length-2?"null":"function(){this.onerror=null;this.src='${next}'}"};this.src='${next}'`;
+  }).join(";");
+  return `<img class="thumb" src="${first}" onerror="${onerr}" alt="${esc(alt)}">`;
 }
 
-// ---------- data loading ----------
+// uniq + sorted helper
+function uniqSorted(arr){
+  if (!Array.isArray(arr)) return [];
+  return [...new Set(arr.filter(v => v !== null && v !== undefined && v !== ""))]
+    .sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" }));
+}
+
+/* ---------------- data loading ------------------- */
 async function fetchDataJSON(){
   if(!window.JSON_URLS || !window.JSON_URLS.length) throw new Error("No JSON_URLS configured (check config.js)");
   let lastErr;
@@ -58,7 +67,7 @@ async function fetchDataJSON(){
       const j = await res.json();
       const rows = Array.isArray(j) ? j : (j.data || j.rows || []);
       if(!Array.isArray(rows)) throw new Error("Unexpected JSON shape");
-      document.getElementById("badge-source").textContent = "Apps Script JSON";
+      document.getElementById("badge-source") && (document.getElementById("badge-source").textContent = "Apps Script JSON");
       log(`Loaded ${rows.length} rows`);
       return rows;
     }catch(e){
@@ -72,7 +81,6 @@ function parseDateAny(v){
   if(!v) return null;
   if (v instanceof Date) return isNaN(v) ? null : v;
   let s = String(v).trim();
-
   // Excel serial
   if (/^\d+(\.\d+)?$/.test(s)) {
     const serial = Number(s);
@@ -80,46 +88,25 @@ function parseDateAny(v){
     const d = new Date(base.getTime() + serial*86400000);
     return isNaN(d) ? null : d;
   }
-  s = s.replace(/-/g,'/');
+  s = s.replace(/-/g,'/');            // tolerate 2025-01-05
   const d1 = new Date(s);
   if (!isNaN(d1)) return d1;
   return null;
 }
-
 function inferDateFromName(name){
   if (!name) return null;
   const s = String(name);
-
-  // INV-123-0125  => mmYY
-  let m = /\bINV-\d+-(\d{4})\b/i.exec(s);
-  if (m) {
-    const mm = parseInt(m[1].slice(0,2),10);
-    const yy = parseInt(m[1].slice(2,4),10);
-    const yr = 2000 + yy;
-    return new Date(yr, mm-1, 1);
-  }
-  // ...-240711 (YYMMDD)
-  m = /-(\d{6})(?!\d)/.exec(s);
-  if (m) {
-    const yy = parseInt(m[1].slice(0,2),10);
-    const mm = parseInt(m[1].slice(2,4),10);
-    const dd = parseInt(m[1].slice(4,6),10);
-    const yr = 2000 + yy;
-    const d = new Date(yr, mm-1, dd);
-    if (!isNaN(d)) return d;
-  }
-  // IPEC Invoice 123-0125
-  m = /IPEC\s*Invoice[^\d]*\d+\s*-\s*(\d{4})/i.exec(s);
-  if (m) {
-    const mm = parseInt(m[1].slice(0,2),10);
-    const yy = parseInt(m[1].slice(2,4),10);
-    const yr = 2000 + yy;
-    return new Date(yr, mm-1, 1);
-  }
+  let m = /\bINV-\d+-(\d{4})\b/i.exec(s);           // INV-123-0125
+  if (m) { const mm=+m[1].slice(0,2), yy=+m[1].slice(2,4), yr=2000+yy; return new Date(yr,mm-1,1); }
+  m = /-(\d{6})(?!\d)/.exec(s);                      // -240711 (YYMMDD)
+  if (m) { const yy=+m[1].slice(0,2), mm=+m[1].slice(2,4), dd=+m[1].slice(4,6); const yr=2000+yy; const d=new Date(yr,mm-1,dd); if(!isNaN(d)) return d; }
+  m = /IPEC\s*Invoice[^\d]*\d+\s*-\s*(\d{4})/i.exec(s); // IPEC Invoice 123-0125
+  if (m) { const mm=+m[1].slice(0,2), yy=+m[1].slice(2,4), yr=2000+yy; return new Date(yr,mm-1,1); }
   return null;
 }
 
-// ---------- normalize (robust code + description fallbacks) ----------
+/* ---------------- normalize ---------------------- */
+// robust code + description fallbacks so Best Sellers always has data
 function normalize(rows){
   return rows.map(r=>{
     const qty  = num(r.Qty);
@@ -132,7 +119,6 @@ function normalize(rows){
     if (!invDate) invDate = inferDateFromName(r.InvoiceName || r.InvoiceFile || r.InvoicePath);
     const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : "";
 
-    // Try many column names for code
     const rawCode =
       r.ItemCode ?? r["Item Code"] ?? r["Item code"] ??
       r.Code ?? r["Code"] ??
@@ -140,19 +126,16 @@ function normalize(rows){
       r.Ref ?? r["Ref"] ?? r.Reference ?? r["Reference"] ??
       r["Item #"] ?? r.Item ?? r["Product Code"] ?? "";
 
-    // Try many column names for description
     const descText =
       r["Product/Description"] ?? r.ProductDescription ?? r["Product Description"] ??
       r.Description ?? r["Item Description"] ?? r.Designation ?? r["Product Name"] ??
       r.Article ?? r["Article"] ?? r["Item Name"] ?? "";
 
-    // Make a grouping key that always exists
     const codeClean = String(rawCode||"").trim();
     const codeKey = codeClean
       ? codeClean.toUpperCase().replace(/\s+/g,"")
       : (String(descText||"").trim().toUpperCase() || "UNKNOWN ITEM");
 
-    // human-readable invoice number for diagnostics
     const invFile =
       r.InvoiceFile || r["Invoice File"] || r["Invoice file"] ||
       r.InvoiceName || r["Invoice Name"] || r["Invoice #"] || r["Invoice n°"] || "";
@@ -165,7 +148,7 @@ function normalize(rows){
       typeLabel: typeLabel(r.Type),
 
       invoice,
-      code: codeKey,                // <-- always non-empty now
+      code: codeKey,                // non-empty grouping key
       desc: descText || codeClean || "",
 
       qty, unit, line, invTotal: num(r.InvoiceTotal),
@@ -182,9 +165,7 @@ function normalize(rows){
   }).filter(o=>Object.values(o).some(v=>v!==""&&v!=null));
 }
 
-
-
-// ---------- filters ----------
+/* ---------------- filters ----------------------- */
 function applyFilters(all){
   const type = document.querySelector('input[name="type"]:checked')?.value || "ALL";
   const cat = document.getElementById("filter-category")?.value || "";
@@ -200,7 +181,6 @@ function applyFilters(all){
     return true;
   });
 }
-
 function buildFilters(all){
   const cats=uniqSorted(all.map(r=>r.category));
   const subs=uniqSorted(all.map(r=>r.subcat));
@@ -218,14 +198,14 @@ function buildFilters(all){
   sups.forEach?.(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; supSel?.appendChild(o);});
 }
 
-// ---------- aggregation ----------
+/* ---------------- aggregation ------------------- */
 function aggregate(all){
   const invoices = new Set(all.map(r=>r.invoice).filter(Boolean)).size;
   const turnover = all.reduce((s,r)=>s+(r.line||0),0);
   const totalQty = all.reduce((s,r)=>s+(r.qty||0),0);
   const avg = invoices ? turnover/invoices : 0;
 
-  // Top clients
+  // Top clients A/B (value + invoice counts by unique phone/invoice)
   const valA={}, valB={}, cntA={}, cntB={};
   const seenA=new Map(), seenB=new Map(); // phone -> Set(invoices)
   all.forEach(r=>{
@@ -252,7 +232,7 @@ function aggregate(all){
   const topA_count = Object.entries(cntA).sort((x,y)=>y[1]-x[1]).slice(0,20);
   const topB_count = Object.entries(cntB).sort((x,y)=>y[1]-x[1]).slice(0,20);
 
-  // Top suppliers
+  // Top suppliers (value + invoice-count)
   const supVal = {}, supCnt = {};
   const supSeen = new Map(); // supplier -> Set(invoices)
   all.forEach(r=>{
@@ -261,11 +241,22 @@ function aggregate(all){
     if(!supSeen.has(r.supplier)) supSeen.set(r.supplier, new Set());
     supSeen.get(r.supplier).add(r.invoice);
   });
-  for(const [sup,set] of supSeen.entries()){
-    supCnt[sup] = (supCnt[sup]||0) + set.size;
-  }
+  for(const [sup,set] of supSeen.entries()){ supCnt[sup] = (supCnt[sup]||0) + set.size; }
   const topSup_value = Object.entries(supVal).sort((x,y)=>y[1]-x[1]).slice(0,20);
   const topSup_count = Object.entries(supCnt).sort((x,y)=>y[1]-x[1]).slice(0,20);
+
+  // Best sellers (group by robust key; never empty due to fallback)
+  const byVal={}, byQty={}, meta={};
+  all.forEach(r=>{
+    const key = r.code || "UNKNOWN ITEM";
+    byVal[key] = (byVal[key]||0) + (r.line||0);
+    byQty[key] = (byQty[key]||0) + (r.qty||0);
+    if(!meta[key]) meta[key] = { desc: r.desc || (key==="UNKNOWN ITEM" ? "" : key), category:r.category, subcat:r.subcat };
+  });
+  const bestVal = Object.entries(byVal).sort((x,y)=>y[1]-x[1]).slice(0,20)
+                    .map(([code,val])=>({code,val,...meta[code]}));
+  const bestQty = Object.entries(byQty).sort((x,y)=>y[1]-x[1]).slice(0,20)
+                    .map(([code,qty])=>({code,qty,...meta[code]}));
 
   // Per-month aggregates (for table)
   const monthAgg = {}; // ym -> {turnover, qty, invSet:Set}
@@ -276,8 +267,7 @@ function aggregate(all){
     m.qty      += (r.qty||0);
     if (r.invoice) m.invSet.add(r.invoice);
   });
-  const months = Object.keys(monthAgg).sort();
-  const monthRows = months.map(ym => {
+  const monthRows = Object.keys(monthAgg).sort().map(ym=>{
     const m = monthAgg[ym];
     const invCount = m.invSet.size;
     const avgB = invCount ? (m.turnover / invCount) : 0;
@@ -287,35 +277,32 @@ function aggregate(all){
   return { invoices, turnover, totalQty, avg,
            topA_value, topB_value, topA_count, topB_count,
            topSup_value, topSup_count,
+           bestVal, bestQty,
            monthRows };
 }
 
-// ---------- renderers ----------
+/* ---------------- renderers --------------------- */
 function renderKPIs(a, grand){
-  document.getElementById("kpi-turnover").textContent=fmtMoney(a.turnover);
-  document.getElementById("kpi-invoices").textContent=fmtInt(a.invoices);
-  document.getElementById("kpi-qty").textContent=fmtInt(a.totalQty);
-  document.getElementById("kpi-avg").textContent=fmtMoney(a.avg);
+  document.getElementById("kpi-turnover") && (document.getElementById("kpi-turnover").textContent=fmtMoney(a.turnover));
+  document.getElementById("kpi-invoices") && (document.getElementById("kpi-invoices").textContent=fmtInt(a.invoices));
+  document.getElementById("kpi-qty") && (document.getElementById("kpi-qty").textContent=fmtInt(a.totalQty));
+  document.getElementById("kpi-avg") && (document.getElementById("kpi-avg").textContent=fmtMoney(a.avg));
 
   const pct = grand && grand.turnover>0 ? (a.turnover / grand.turnover) * 100 : 0;
   const el = document.getElementById("kpi-turnover-percent");
   if (el) el.textContent = pct.toFixed(1) + "%";
 }
-
-// ✅ guard so missing containers never crash
 function setPillset(el, mode){
   if(!el) return;
-  const nodes = el.querySelectorAll(".pill");
-  nodes?.forEach?.(b=>b.setAttribute("aria-pressed", b.dataset.mode===mode ? "true":"false"));
+  el.querySelectorAll(".pill")?.forEach?.(b => b.setAttribute("aria-pressed", b.dataset.mode===mode ? "true":"false"));
 }
-
 function renderTopClients(el, list, mode){
   if(!el) return;
   el.innerHTML="";
   (list||[]).forEach(([name,amt],i)=>{
     const li=document.createElement("li");
     li.className="li";
-    li.innerHTML=`<div class="grow"><div class="name">${i+1}. ${name||"Unknown"}</div></div>
+    li.innerHTML=`<div class="grow"><div class="name">${i+1}. ${esc(name||"Unknown")}</div></div>
       <div class="value">${mode==="value" ? fmtMoney(amt) : fmtInt(amt)}</div>`;
     el.appendChild(li);
   });
@@ -323,20 +310,22 @@ function renderTopClients(el, list, mode){
 function renderBestItems(el, list, mode){
   if(!el) return;
   el.innerHTML="";
-  (list||[]).forEach((it,i)=>{
+  if(!list || list.length===0){
+    el.innerHTML = `<div class="muted" style="padding:12px">No items for current filters.</div>`;
+    return;
+  }
+  list.forEach((it,i)=>{
     const li=document.createElement("li");
     li.className="li";
     li.innerHTML=`${imgHTML(it.code,it.code)}
       <div class="grow">
-        <div class="name">${i+1}. ${it.code}</div>
-        <div class="muted">${it.desc||""}</div>
+        <div class="name">${i+1}. ${esc(it.code)}</div>
+        <div class="muted">${esc(it.desc||"")}</div>
       </div>
       <div class="value">${mode==="value" ? fmtMoney(it.val) : fmtInt(it.qty)}</div>`;
     el.appendChild(li);
   });
 }
-
-// -------- Per Month Sales table --------
 function renderMonthTable(rows){
   const tbody = document.querySelector('#month-table tbody');
   if(!tbody) return;
@@ -354,8 +343,7 @@ function renderMonthTable(rows){
   });
 }
 
-/* ===== Diagnostics (max XXX per folder + NAME) ===== */
-
+/* ---------------- Diagnostics ------------------- */
 // Clean trailing name (strip extension, tidy separators)
 function cleanName(s){
   let out = String(s||"");
@@ -363,30 +351,17 @@ function cleanName(s){
   out = out.replace(/[_\-]+/g," ").replace(/\s{2,}/g," ").trim();
   return out;
 }
-
-// Extract { seq, snippet, name } from any invoice-like string
-// - "INV-371-0625 Resto Daleb..."        -> {371, "INV-371-0625", "Resto Daleb..."}
-// - "IPEC Invoice 016-0225 شركة..."      -> {16,  "IPEC Invoice 016-0225", "شركة..."}
-// - Fallback "NNN-YYYY Name"
+// Extract { seq, snippet, name } from invoice-like string
 function extractParts(s) {
   const str = String(s || "");
-
-  // INV-XXX-YYYY + name
-  let m = /INV[^\d]*?(\d{1,5})[^\d]*?(\d{4})(.*)$/i.exec(str);
+  let m = /INV[^\d]*?(\d{1,5})[^\d]*?(\d{4})(.*)$/i.exec(str);                 // INV-XXX-YYYY + name
   if (m) return { seq: parseInt(m[1], 10), snippet: `INV-${m[1]}-${m[2]}`, name: cleanName(m[3]) };
-
-  // IPEC Invoice XXX-YYYY + name
-  m = /IPEC\s*Invoice[^\d]*?(\d{1,5})[^\d]*?(\d{4})(.*)$/i.exec(str);
+  m = /IPEC\s*Invoice[^\d]*?(\d{1,5})[^\d]*?(\d{4})(.*)$/i.exec(str);          // IPEC Invoice XXX-YYYY + name
   if (m) return { seq: parseInt(m[1], 10), snippet: `IPEC Invoice ${m[1]}-${m[2]}`, name: cleanName(m[3]) };
-
-  // Generic NNN-YYYY + name
-  m = /(\d{1,5})\s*[-_]\s*(\d{4})(.*)$/.exec(str);
+  m = /(\d{1,5})\s*[-_]\s*(\d{4})(.*)$/.exec(str);                             // generic NNN-YYYY + name
   if (m) return { seq: parseInt(m[1], 10), snippet: `${m[1]}-${m[2]}`, name: cleanName(m[3]) };
-
   return null;
 }
-
-// Find the invoice with the largest XXX for a given Type ("A" or "B")
 function maxSeqByType(all, type) {
   let best = null; // {seq, snippet, name}
   all.forEach(r => {
@@ -398,21 +373,17 @@ function maxSeqByType(all, type) {
   });
   return best;
 }
-
-// Render: one row per folder, show snippet + NAME (no number column)
 function renderLatestDiagnostics(all) {
   const A = maxSeqByType(all, "A");
   const B = maxSeqByType(all, "B");
-
   function fill(one, elId) {
     const el = document.getElementById(elId);
     if (!el) return;
     el.innerHTML = "";
     const li = document.createElement("li");
     li.className = "li";
-    if (!one) {
-      li.innerHTML = `<div class="grow"><div class="name">—</div></div>`;
-    } else {
+    if (!one) li.innerHTML = `<div class="grow"><div class="name">—</div></div>`;
+    else {
       const namePart = one.name ? ` <span class="muted">${esc(one.name)}</span>` : "";
       li.innerHTML = `<div class="grow"><div class="name">${esc(one.snippet)}${namePart}</div></div>`;
     }
@@ -421,15 +392,13 @@ function renderLatestDiagnostics(all) {
   fill(A, "diag-lastA");
   fill(B, "diag-lastB");
 }
-
-// Back-compat alias (if any old code calls this)
+// Back-compat alias (if any old code calls it)
 function latestInvoicesByType(all, type, limit = 1) {
   const best = maxSeqByType(all, type);
   return best ? [best] : [];
 }
-/* ===== end Diagnostics ===== */
 
-// ---------- collapsibles (optional) ----------
+/* --------------- collapsibles ------------------- */
 function wireCollapsibles(){
   document.querySelectorAll('.toggle[data-target]')?.forEach?.(btn=>{
     btn.addEventListener('click', ()=>{
@@ -442,12 +411,12 @@ function wireCollapsibles(){
   });
 }
 
-// ---------- main ----------
+/* -------------------- main ---------------------- */
 async function main(){
   try{
     const raw = await fetchDataJSON();
     const all = normalize(raw);
-    document.getElementById("badge-total-rows").textContent = `${all.length} rows`;
+    document.getElementById("badge-total-rows") && (document.getElementById("badge-total-rows").textContent = `${all.length} rows`);
 
     buildFilters(all);
     const grand = aggregate(all);
@@ -516,13 +485,6 @@ async function main(){
     const badge = document.getElementById("badge-source");
     if (badge) badge.textContent="Error";
   }
-}
-// === drop-in: unique + sorted helper used by buildFilters ===
-function uniqSorted(arr){
-  if (!Array.isArray(arr)) return [];
-  // keep non-empty values, unique them, then sort case-insensitively (numeric-aware)
-  return [...new Set(arr.filter(v => v !== null && v !== undefined && v !== ""))]
-    .sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" }));
 }
 
 main();
