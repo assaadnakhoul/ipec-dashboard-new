@@ -5,7 +5,7 @@
  * - Filters (Type/Category/Sub-category/Month/Supplier)
  * - KPIs, Top Clients A/B, Top Suppliers, Best Sellers
  * - Per Month Sales table (filters applied)
- * - Diagnostics: biggest XXX per folder (INV-XXX-YYYY / IPEC Invoice XXX-YYYY)
+ * - Diagnostics: biggest XXX per folder + NAME (snippet + trailing name)
  ****************************************************/
 
 // ---------- utils ----------
@@ -16,7 +16,6 @@ const fmtDate  = d => !d ? "—" : `${d.getFullYear()}-${String(d.getMonth()+1).
 const esc      = s => String(s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const ymLabel  = ym => ym || "—";
 
-// parse number strings
 function num(x){
   if(x==null) return 0;
   let s=String(x).trim().replace(/[^\d.,-]/g,"");
@@ -120,6 +119,7 @@ function inferDateFromName(name){
   return null;
 }
 
+// ---------- normalize ----------
 function normalize(rows){
   return rows.map(r=>{
     const qty = num(r.Qty), unit = num(r.UnitPrice);
@@ -166,11 +166,11 @@ const uniqSorted = a =>
 
 // ---------- filters ----------
 function applyFilters(all){
-  const type = document.querySelector('input[name="type"]:checked').value;
-  const cat = document.getElementById("filter-category").value;
-  const sub = document.getElementById("filter-subcat").value;
-  const month = document.getElementById("filter-month").value;
-  const supplier = document.getElementById("filter-supplier").value;
+  const type = document.querySelector('input[name="type"]:checked')?.value || "ALL";
+  const cat = document.getElementById("filter-category")?.value || "";
+  const sub = document.getElementById("filter-subcat")?.value || "";
+  const month = document.getElementById("filter-month")?.value || "";
+  const supplier = document.getElementById("filter-supplier")?.value || "";
   return all.filter(r=>{
     if(type!=="ALL" && r.type!==type) return false;
     if(cat && r.category!==cat) return false;
@@ -192,10 +192,10 @@ function buildFilters(all){
   const mSel=document.getElementById("filter-month");
   const supSel=document.getElementById("filter-supplier");
 
-  cats.forEach(c=>{const o=document.createElement("option"); o.value=c; o.textContent=c; catSel.appendChild(o);});
-  subs.forEach(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; subSel.appendChild(o);});
-  months.forEach(m=>{ if(!m) return; const o=document.createElement("option"); o.value=m; o.textContent=m; mSel.appendChild(o);});
-  sups.forEach(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; supSel.appendChild(o);});
+  cats.forEach?.(c=>{const o=document.createElement("option"); o.value=c; o.textContent=c; catSel?.appendChild(o);});
+  subs.forEach?.(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; subSel?.appendChild(o);});
+  months.forEach?.(m=>{ if(!m) return; const o=document.createElement("option"); o.value=m; o.textContent=m; mSel?.appendChild(o);});
+  sups.forEach?.(s=>{const o=document.createElement("option"); o.value=s; o.textContent=s; supSel?.appendChild(o);});
 }
 
 // ---------- aggregation ----------
@@ -247,7 +247,7 @@ function aggregate(all){
   const topSup_value = Object.entries(supVal).sort((x,y)=>y[1]-x[1]).slice(0,20);
   const topSup_count = Object.entries(supCnt).sort((x,y)=>y[1]-x[1]).slice(0,20);
 
-  // -------- Per-month aggregates (for table) --------
+  // Per-month aggregates (for table)
   const monthAgg = {}; // ym -> {turnover, qty, invSet:Set}
   all.forEach(r=>{
     if(!r.ym) return;
@@ -282,11 +282,17 @@ function renderKPIs(a, grand){
   if (el) el.textContent = pct.toFixed(1) + "%";
 }
 
-function setPillset(el, mode){ el.querySelectorAll(".pill").forEach(b=>b.setAttribute("aria-pressed", b.dataset.mode===mode ? "true":"false")); }
+// ✅ guard so missing containers never crash
+function setPillset(el, mode){
+  if(!el) return;
+  const nodes = el.querySelectorAll(".pill");
+  nodes?.forEach?.(b=>b.setAttribute("aria-pressed", b.dataset.mode===mode ? "true":"false"));
+}
 
 function renderTopClients(el, list, mode){
+  if(!el) return;
   el.innerHTML="";
-  list.forEach(([name,amt],i)=>{
+  (list||[]).forEach(([name,amt],i)=>{
     const li=document.createElement("li");
     li.className="li";
     li.innerHTML=`<div class="grow"><div class="name">${i+1}. ${name||"Unknown"}</div></div>
@@ -295,8 +301,9 @@ function renderTopClients(el, list, mode){
   });
 }
 function renderBestItems(el, list, mode){
+  if(!el) return;
   el.innerHTML="";
-  list.forEach((it,i)=>{
+  (list||[]).forEach((it,i)=>{
     const li=document.createElement("li");
     li.className="li";
     li.innerHTML=`${imgHTML(it.code,it.code)}
@@ -312,9 +319,9 @@ function renderBestItems(el, list, mode){
 // -------- Per Month Sales table --------
 function renderMonthTable(rows){
   const tbody = document.querySelector('#month-table tbody');
-  if(!tbody){ log("No #month-table tbody"); return; }
+  if(!tbody) return;
   tbody.innerHTML = "";
-  rows.forEach(r=>{
+  (rows||[]).forEach(r=>{
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${esc(ymLabel(r.ym))}</td>
@@ -327,47 +334,55 @@ function renderMonthTable(rows){
   });
 }
 
-/* ======================= Diagnostics (max XXX per folder) ======================= */
+/* ===== Diagnostics (max XXX per folder + NAME) ===== */
 
-// Extract { seq, snippet } from any invoice-like string
-// - "INV-371-0625 ..."              -> {seq:371, snippet:"INV-371-0625"}
-// - "IPEC Invoice 016-0225 ..."     -> {seq:16,  snippet:"IPEC Invoice 016-0225"}
-// - Fallback "NNN-YYYY"             -> {seq:NNN, snippet:"NNN-YYYY"}
-function extractSeqSnippet(s) {
+// Clean trailing name (strip extension, tidy separators)
+function cleanName(s){
+  let out = String(s||"");
+  out = out.replace(/\.[a-z0-9]{2,5}$/i,"");   // remove .xlsx, .pdf, ...
+  out = out.replace(/[_\-]+/g," ").replace(/\s{2,}/g," ").trim();
+  return out;
+}
+
+// Extract { seq, snippet, name } from any invoice-like string
+// - "INV-371-0625 Resto Daleb..."        -> {371, "INV-371-0625", "Resto Daleb..."}
+// - "IPEC Invoice 016-0225 شركة..."      -> {16,  "IPEC Invoice 016-0225", "شركة..."}
+// - Fallback "NNN-YYYY Name"
+function extractParts(s) {
   const str = String(s || "");
 
-  // INV-XXX-YYYY
-  let m = /INV[^\d]*?(\d{1,5})[^\d]*?(\d{4})/i.exec(str);
-  if (m) return { seq: parseInt(m[1], 10), snippet: `INV-${m[1]}-${m[2]}` };
+  // INV-XXX-YYYY + name
+  let m = /INV[^\d]*?(\d{1,5})[^\d]*?(\d{4})(.*)$/i.exec(str);
+  if (m) return { seq: parseInt(m[1], 10), snippet: `INV-${m[1]}-${m[2]}`, name: cleanName(m[3]) };
 
-  // IPEC Invoice XXX-YYYY
-  m = /IPEC\s*Invoice[^\d]*?(\d{1,5})[^\d]*?(\d{4})/i.exec(str);
-  if (m) return { seq: parseInt(m[1], 10), snippet: `IPEC Invoice ${m[1]}-${m[2]}` };
+  // IPEC Invoice XXX-YYYY + name
+  m = /IPEC\s*Invoice[^\d]*?(\d{1,5})[^\d]*?(\d{4})(.*)$/i.exec(str);
+  if (m) return { seq: parseInt(m[1], 10), snippet: `IPEC Invoice ${m[1]}-${m[2]}`, name: cleanName(m[3]) };
 
-  // Generic NNN-YYYY
-  m = /(\d{1,5})\s*[-_]\s*(\d{4})/.exec(str);
-  if (m) return { seq: parseInt(m[1], 10), snippet: `${m[1]}-${m[2]}` };
+  // Generic NNN-YYYY + name
+  m = /(\d{1,5})\s*[-_]\s*(\d{4})(.*)$/.exec(str);
+  if (m) return { seq: parseInt(m[1], 10), snippet: `${m[1]}-${m[2]}`, name: cleanName(m[3]) };
 
   return null;
 }
 
 // Find the invoice with the largest XXX for a given Type ("A" or "B")
 function maxSeqByType(all, type) {
-  let best = null; // {seq, snippet}
+  let best = null; // {seq, snippet, name}
   all.forEach(r => {
     if (r.type !== type) return;
     const src = r.invoiceFile || r.invoiceName || r.invoice || "";
-    const got = extractSeqSnippet(src);
+    const got = extractParts(src);
     if (!got) return;
     if (!best || got.seq > best.seq) best = got;
   });
   return best;
 }
 
-// Render one row per folder showing the biggest XXX and its snippet
+// Render: one row per folder, show snippet + NAME (no number column)
 function renderLatestDiagnostics(all) {
-  const A = maxSeqByType(all, "A");   // Folder A: expects "INV-XXX-YYYY"
-  const B = maxSeqByType(all, "B");   // Folder B: expects "IPEC Invoice XXX-YYYY"
+  const A = maxSeqByType(all, "A");
+  const B = maxSeqByType(all, "B");
 
   function fill(one, elId) {
     const el = document.getElementById(elId);
@@ -376,10 +391,10 @@ function renderLatestDiagnostics(all) {
     const li = document.createElement("li");
     li.className = "li";
     if (!one) {
-      li.innerHTML = `<div class="grow"><div class="name">—</div></div><div class="value">—</div>`;
+      li.innerHTML = `<div class="grow"><div class="name">—</div></div>`;
     } else {
-      li.innerHTML = `<div class="grow"><div class="name">${esc(one.snippet)}</div></div>
-                      <div class="value">${fmtInt(one.seq)}</div>`;
+      const namePart = one.name ? ` <span class="muted">${esc(one.name)}</span>` : "";
+      li.innerHTML = `<div class="grow"><div class="name">${esc(one.snippet)}${namePart}</div></div>`;
     }
     el.appendChild(li);
   }
@@ -387,17 +402,16 @@ function renderLatestDiagnostics(all) {
   fill(B, "diag-lastB");
 }
 
-// ✅ Back-compat alias (prevents "latestInvoicesByType is not defined")
+// Back-compat alias (if any old code calls this)
 function latestInvoicesByType(all, type, limit = 1) {
   const best = maxSeqByType(all, type);
   return best ? [best] : [];
 }
-/* ===================== end Diagnostics (max XXX per folder) ===================== */
-
+/* ===== end Diagnostics ===== */
 
 // ---------- collapsibles (optional) ----------
 function wireCollapsibles(){
-  document.querySelectorAll('.toggle[data-target]').forEach(btn=>{
+  document.querySelectorAll('.toggle[data-target]')?.forEach?.(btn=>{
     btn.addEventListener('click', ()=>{
       const id=btn.getAttribute('data-target');
       const card=document.getElementById(id);
@@ -453,26 +467,25 @@ async function main(){
     }
 
     // Filter events
-    document.querySelectorAll('input[name="type"]').forEach(r=>{
+    document.querySelectorAll('input[name="type"]')?.forEach?.(r=>{
       try{ r.addEventListener("change", recomputeAndRender); }catch(e){ log("Type radio bind failed:", e); }
     });
     ["filter-category","filter-subcat","filter-month","filter-supplier"].forEach(id=>{
       const el=document.getElementById(id);
-      if(el) el.addEventListener("change", recomputeAndRender);
-      else log("Missing filter element:", id);
+      el?.addEventListener?.("change", recomputeAndRender);
     });
 
     // Mode toggles
-    document.getElementById("clientsModeA").addEventListener("click", e=>{
+    document.getElementById("clientsModeA")?.addEventListener("click", e=>{
       const b=e.target.closest(".pill"); if(!b) return; state.clientsA=b.dataset.mode; recomputeAndRender();
     });
-    document.getElementById("clientsModeB").addEventListener("click", e=>{
+    document.getElementById("clientsModeB")?.addEventListener("click", e=>{
       const b=e.target.closest(".pill"); if(!b) return; state.clientsB=b.dataset.mode; recomputeAndRender();
     });
-    document.getElementById("suppliersMode").addEventListener("click", e=>{
+    document.getElementById("suppliersMode")?.addEventListener("click", e=>{
       const b=e.target.closest(".pill"); if(!b) return; state.suppliers=b.dataset.mode; recomputeAndRender();
     });
-    document.getElementById("itemsMode").addEventListener("click", e=>{
+    document.getElementById("itemsMode")?.addEventListener("click", e=>{
       const b=e.target.closest(".pill"); if(!b) return; state.items=b.dataset.mode; recomputeAndRender();
     });
 
@@ -480,7 +493,8 @@ async function main(){
     recomputeAndRender();
   }catch(err){
     log("FATAL:", String(err));
-    document.getElementById("badge-source").textContent="Error";
+    const badge = document.getElementById("badge-source");
+    if (badge) badge.textContent="Error";
   }
 }
 
