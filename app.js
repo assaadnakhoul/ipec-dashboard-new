@@ -305,26 +305,66 @@ function renderBestItems(el, list, mode){
   });
 }
 
-// ---------- diagnostics: last (single) invoice per folder, display InvoiceFile ----------
-function latestInvoicesByType(all, type, limit = 1){
-  const map = new Map(); // key = invoice id/url -> {display,sum,date}
-  all.filter(r => r.type === type).forEach(r => {
-    const key = r.invoice || r.invoiceFile || r.invoiceName || "UNKNOWN";
-    const d   = r.invDate || inferDateFromName(r.invoiceFile || r.invoiceName || r.invoice) || null;
-    let o = map.get(key);
-    if (!o) {
-      o = { display: r.invoiceFile || r.invoiceName || key, sum: 0, date: d };
-      map.set(key, o);
-    } else if (!o.display && (r.invoiceFile || r.invoiceName)) {
-      o.display = r.invoiceFile || r.invoiceName;
-    }
-    o.sum += (r.line || 0);
-    if (d && (!o.date || d > o.date)) o.date = d;
-  });
-  return Array.from(map.values())
-    .sort((a,b) => (b.date?.getTime()||0) - (a.date?.getTime()||0))
-    .slice(0, limit);
+/* ======================= Diagnostics (max XXX per folder) ======================= */
+
+// Extract { seq, snippet } from any invoice-like string
+// - matches "INV-371-0625 ..."  -> {seq:371, snippet:"INV-371-0625"}
+// - matches "IPEC Invoice 016-0225 ..." -> {seq:16, snippet:"IPEC Invoice 016-0225"}
+// - fallback: first "digits-digits4" pattern -> {seq:..., snippet:"NNN-YYYY"}
+function extractSeqSnippet(s) {
+  const str = String(s || "");
+
+  // INV-XXX-YYYY
+  let m = /INV[^\d]*?(\d{1,5})[^\d]*?(\d{4})/i.exec(str);
+  if (m) return { seq: parseInt(m[1], 10), snippet: `INV-${m[1]}-${m[2]}` };
+
+  // IPEC Invoice XXX-YYYY
+  m = /IPEC\s*Invoice[^\d]*?(\d{1,5})[^\d]*?(\d{4})/i.exec(str);
+  if (m) return { seq: parseInt(m[1], 10), snippet: `IPEC Invoice ${m[1]}-${m[2]}` };
+
+  // Generic NNN-YYYY (first occurrence)
+  m = /(\d{1,5})\s*[-_]\s*(\d{4})/.exec(str);
+  if (m) return { seq: parseInt(m[1], 10), snippet: `${m[1]}-${m[2]}` };
+
+  return null;
 }
+
+// Find the invoice with the largest XXX for a given Type ("A" or "B")
+function maxSeqByType(all, type) {
+  let best = null; // {seq, snippet}
+  all.forEach(r => {
+    if (r.type !== type) return;
+    const src = r.invoiceFile || r.invoiceName || r.invoice || "";
+    const got = extractSeqSnippet(src);
+    if (!got) return;
+    if (!best || got.seq > best.seq) best = got;
+  });
+  return best;
+}
+
+function renderLatestDiagnostics(all) {
+  const A = maxSeqByType(all, "A");   // Folder A: INV-XXX-YYYY
+  const B = maxSeqByType(all, "B");   // Folder B: IPEC Invoice XXX-YYYY
+
+  function fill(one, elId) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    el.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "li";
+    if (!one) {
+      li.innerHTML = `<div class="grow"><div class="name">—</div></div><div class="value">—</div>`;
+    } else {
+      li.innerHTML = `<div class="grow"><div class="name">${esc(one.snippet)}</div></div>
+                      <div class="value">${fmtInt(one.seq)}</div>`;
+    }
+    el.appendChild(li);
+  }
+  fill(A, "diag-lastA");
+  fill(B, "diag-lastB");
+}
+/* ===================== end Diagnostics (max XXX per folder) ===================== */
+
 function renderLatestDiagnostics(all){
   const A = latestInvoicesByType(all, "A", 1);
   const B = latestInvoicesByType(all, "B", 1);
