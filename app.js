@@ -161,6 +161,28 @@ function normalize(rows){
       invDate, ym
     };
   }).filter(o=>Object.values(o).some(v=>v!==""&&v!=null));
+  return {
+  dateFile: r.InvoiceFile || r.InvoiceName || r.Date || "",
+  client: r.Client || "",
+  phone: r.Phone || "",
+  type: String(r.Type||"").toUpperCase(),
+  typeLabel: typeLabel(r.Type),
+  invoice,
+  code: String(r.ItemCode||"").trim().toUpperCase().replace(/\s+/g,""),
+  desc: r["Product/Description"] || r.ProductDescription || r.Description || "",
+  qty, unit, line, invTotal: num(r.InvoiceTotal),
+
+  supplier: r.Supplier || "",
+  category: r.Category || "",
+  subcat:   r["Sub-category"] || r.Subcategory || "",
+
+  // ✅ keep raw identifiers for diagnostics
+  invoiceFile: r.InvoiceFile || "",    // e.g. "INV-437-0625 ..."
+  invoiceName: r.InvoiceName || "",    // optional alternative
+
+  invDate, ym
+};
+
 }
 
 const uniqSorted = a =>
@@ -310,31 +332,41 @@ function renderBestItems(el, list, mode){
   });
 }
 
-// ---------- diagnostics: latest invoices per type ----------
-function latestInvoicesByType(all, type, limit=10){
-  const map = new Map(); // invoice -> {name,sum,date}
-  all.filter(r=>r.type===type && r.invoice).forEach(r=>{
-    const d = r.invDate || inferDateFromName(r.invoice) || null;
-    if(!map.has(r.invoice)) map.set(r.invoice, {name:r.invoice, sum:0, date:d});
-    const o = map.get(r.invoice);
-    o.sum += (r.line||0);
-    if(d && (!o.date || d>o.date)) o.date = d;
+// ---------- diagnostics: latest (single) invoice per folder ----------
+function latestInvoicesByType(all, type, limit = 1){
+  const map = new Map(); // key -> {display,sum,date}
+  all.filter(r => r.type === type).forEach(r => {
+    // Prefer InvoiceFile as the human display/identity
+    const display = r.invoiceFile || r.invoiceName || r.invoice || "";
+    const key = display || r.invoice || "UNKNOWN";
+    const d = r.invDate || inferDateFromName(display || r.invoice) || null;
+
+    if (!map.has(key)) map.set(key, { display, sum: 0, date: d });
+    const o = map.get(key);
+    o.sum += (r.line || 0);
+    if (d && (!o.date || d > o.date)) o.date = d;
   });
-  return Array.from(map.values()).sort((a,b)=> (b.date?.getTime()||0) - (a.date?.getTime()||0)).slice(0,limit);
+
+  return Array.from(map.values())
+    .sort((a,b) => (b.date?.getTime()||0) - (a.date?.getTime()||0))
+    .slice(0, limit);
 }
+
 function renderLatestDiagnostics(all){
-  const A = latestInvoicesByType(all, "A", 10);
-  const B = latestInvoicesByType(all, "B", 10);
+  const A = latestInvoicesByType(all, "A", 1); // only the latest one
+  const B = latestInvoicesByType(all, "B", 1);
 
   function fill(list, elId){
     const el = document.getElementById(elId);
     if(!el) return;
     el.innerHTML = "";
-    list.forEach((o,i)=>{
+    list.forEach((o, i) => {
+      const name = o.display || "—";
       const li = document.createElement("li");
-      li.className="li";
+      li.className = "li";
+      // No <a>, no link—just plain text (InvoiceFile)
       li.innerHTML = `<div class="grow">
-          <div class="name">${i+1}. ${o.name}</div>
+          <div class="name">${name}</div>
           <div class="muted">${fmtDate(o.date)}</div>
         </div>
         <div class="value">${fmtMoney(o.sum)}</div>`;
@@ -344,6 +376,7 @@ function renderLatestDiagnostics(all){
   fill(A, "diag-lastA");
   fill(B, "diag-lastB");
 }
+
 
 // Trend chart
 let trendChart;
