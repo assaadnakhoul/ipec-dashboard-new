@@ -1,10 +1,10 @@
 /****************************************************
  * IPEC Sales Dashboard — app.js
- * - Loads JSON (cache-busted, no-store)
+ * - Loads JSON (simple GET with cache-bust)
  * - Normalizes rows
  * - Filters (Type/Category/Sub-category/Month/Supplier)
  * - KPIs, Top Clients A/B, Top Suppliers, Best Sellers, Trend
- * - Diagnostics: latest invoices for Folder A (OUT) & Folder B (IN)
+ * - Diagnostics: shows ONLY the last invoice number (InvoiceFile) for A & B
  ****************************************************/
 
 // ---------- utils ----------
@@ -12,6 +12,7 @@ const log = (...a)=>{console.log(...a); const el=document.getElementById("diag-l
 const fmtMoney = n => (n??0).toLocaleString(undefined,{maximumFractionDigits:2});
 const fmtInt   = n => (n??0).toLocaleString();
 const fmtDate  = d => !d ? "—" : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const esc      = s => String(s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
 function num(x){
   if(x==null) return 0;
@@ -27,7 +28,7 @@ const typeLabel = t =>
   (String(t||"").toUpperCase()==="A"||String(t||"").toUpperCase()==="TYPE A")?"INVOICE OUT":
   (String(t||"").toUpperCase()==="B"||String(t||"").toUpperCase()==="TYPE B")?"INVOICE IN":"";
 
-// thumbnail helper
+// thumbnails (unused in diagnostics but used in Best Sellers)
 function imgHTML(code, alt=""){
   const base = window.IMAGES_BASE || "./public/images/";
   const exts = window.IMAGE_EXTS || [".webp",".jpg",".png"];
@@ -43,42 +44,27 @@ async function fetchDataJSON(){
   let lastErr;
   for (const baseUrl of window.JSON_URLS){
     try{
-      // cache-bust without adding non-simple headers (avoids preflight)
       const url = baseUrl + (baseUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
       log("Fetching JSON:", url);
-
-      const res = await fetch(url, {
-        method: "GET",
-        mode: "cors",
-        credentials: "omit",
-        cache: "no-store"      // fine; does not cause preflight
-        // ⛔ no custom headers here; even "Pragma"/"Cache-Control" will preflight
-      });
-
+      const res = await fetch(url, { method: "GET", mode: "cors", credentials: "omit", cache: "no-store" });
       if(!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-
-      // defensive: if GAS ever returns HTML (eg login), surface it
       const ct = (res.headers.get("content-type") || "").toLowerCase();
       if (!ct.includes("json")) {
         const txt = await res.text();
         throw new Error(`Non-JSON from server. First bytes: ${txt.slice(0,120)}`);
       }
-
       const j = await res.json();
       const rows = Array.isArray(j) ? j : (j.data || j.rows || []);
       if(!Array.isArray(rows)) throw new Error("Unexpected JSON shape");
-
       document.getElementById("badge-source").textContent = "Apps Script JSON";
       log(`Loaded ${rows.length} rows`);
       return rows;
     }catch(e){
-      lastErr = e;
-      log("Fetch failed:", String(e));
+      lastErr = e; log("Fetch failed:", String(e));
     }
   }
   throw lastErr || new Error("All JSON sources failed");
 }
-
 
 function parseDateAny(v){
   if(!v) return null;
@@ -143,6 +129,11 @@ function normalize(rows){
 
     const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : "";
 
+    // prefer the human-readable invoice number from the sheet
+    const invFile =
+      r.InvoiceFile || r["Invoice File"] || r["Invoice file"] ||
+      r.InvoiceName || r["Invoice Name"] || r["Invoice #"] || r["Invoice n°"] || "";
+
     return {
       dateFile: r.InvoiceFile || r.InvoiceName || r.Date || "",
       client: r.Client || "",
@@ -158,31 +149,13 @@ function normalize(rows){
       category: r.Category || "",
       subcat:   r["Sub-category"] || r.Subcategory || "",
 
+      // keep for diagnostics
+      invoiceFile: invFile,
+      invoiceName: r.InvoiceName || "",
+
       invDate, ym
     };
   }).filter(o=>Object.values(o).some(v=>v!==""&&v!=null));
-  return {
-  dateFile: r.InvoiceFile || r.InvoiceName || r.Date || "",
-  client: r.Client || "",
-  phone: r.Phone || "",
-  type: String(r.Type||"").toUpperCase(),
-  typeLabel: typeLabel(r.Type),
-  invoice,
-  code: String(r.ItemCode||"").trim().toUpperCase().replace(/\s+/g,""),
-  desc: r["Product/Description"] || r.ProductDescription || r.Description || "",
-  qty, unit, line, invTotal: num(r.InvoiceTotal),
-
-  supplier: r.Supplier || "",
-  category: r.Category || "",
-  subcat:   r["Sub-category"] || r.Subcategory || "",
-
-  // ✅ keep raw identifiers for diagnostics
-  invoiceFile: r.InvoiceFile || "",    // e.g. "INV-437-0625 ..."
-  invoiceName: r.InvoiceName || "",    // optional alternative
-
-  invDate, ym
-};
-
 }
 
 const uniqSorted = a =>
@@ -332,41 +305,39 @@ function renderBestItems(el, list, mode){
   });
 }
 
-// ---------- diagnostics: latest (single) invoice per folder ----------
+// ---------- diagnostics: last (single) invoice per folder, display InvoiceFile ----------
 function latestInvoicesByType(all, type, limit = 1){
-  const map = new Map(); // key -> {display,sum,date}
+  const map = new Map(); // key = invoice id/url -> {display,sum,date}
   all.filter(r => r.type === type).forEach(r => {
-    // Prefer InvoiceFile as the human display/identity
-    const display = r.invoiceFile || r.invoiceName || r.invoice || "";
-    const key = display || r.invoice || "UNKNOWN";
-    const d = r.invDate || inferDateFromName(display || r.invoice) || null;
-
-    if (!map.has(key)) map.set(key, { display, sum: 0, date: d });
-    const o = map.get(key);
+    const key = r.invoice || r.invoiceFile || r.invoiceName || "UNKNOWN";
+    const d   = r.invDate || inferDateFromName(r.invoiceFile || r.invoiceName || r.invoice) || null;
+    let o = map.get(key);
+    if (!o) {
+      o = { display: r.invoiceFile || r.invoiceName || key, sum: 0, date: d };
+      map.set(key, o);
+    } else if (!o.display && (r.invoiceFile || r.invoiceName)) {
+      o.display = r.invoiceFile || r.invoiceName;
+    }
     o.sum += (r.line || 0);
     if (d && (!o.date || d > o.date)) o.date = d;
   });
-
   return Array.from(map.values())
     .sort((a,b) => (b.date?.getTime()||0) - (a.date?.getTime()||0))
     .slice(0, limit);
 }
-
 function renderLatestDiagnostics(all){
-  const A = latestInvoicesByType(all, "A", 1); // only the latest one
+  const A = latestInvoicesByType(all, "A", 1);
   const B = latestInvoicesByType(all, "B", 1);
 
   function fill(list, elId){
     const el = document.getElementById(elId);
     if(!el) return;
     el.innerHTML = "";
-    list.forEach((o, i) => {
-      const name = o.display || "—";
+    list.forEach((o) => {
       const li = document.createElement("li");
       li.className = "li";
-      // No <a>, no link—just plain text (InvoiceFile)
       li.innerHTML = `<div class="grow">
-          <div class="name">${name}</div>
+          <div class="name">${esc(o.display || "—")}</div>
           <div class="muted">${fmtDate(o.date)}</div>
         </div>
         <div class="value">${fmtMoney(o.sum)}</div>`;
@@ -376,7 +347,6 @@ function renderLatestDiagnostics(all){
   fill(A, "diag-lastA");
   fill(B, "diag-lastB");
 }
-
 
 // Trend chart
 let trendChart;
@@ -398,7 +368,7 @@ function renderTrend(months, monthly){
   });
 }
 
-// ---------- collapsibles ----------
+// ---------- collapsibles (optional) ----------
 function wireCollapsibles(){
   document.querySelectorAll('.toggle[data-target]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -421,7 +391,7 @@ async function main(){
     buildFilters(all);
     const grand = aggregate(all);
 
-    // render diagnostics once (based on the full dataset)
+    // diagnostics (full dataset)
     renderLatestDiagnostics(all);
 
     const state = { clientsA:"value", clientsB:"value", suppliers:"value", items:"value" };
