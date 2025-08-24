@@ -119,33 +119,38 @@ function inferDateFromName(name){
   return null;
 }
 
-// ---------- normalize (robust item code detection) ----------
+// ---------- normalize (robust code + description fallbacks) ----------
 function normalize(rows){
   return rows.map(r=>{
     const qty  = num(r.Qty);
     const unit = num(r.UnitPrice);
     const line = r.LineTotal!==undefined && r.LineTotal!=="" ? num(r.LineTotal) : qty*unit;
 
-    const invoice = r.InvoicePath || r.Invoice || r.InvoiceFile || r.InvoiceName || "";
-    const invDateRaw = r.Date || r.InvoiceDate || r["Invoice Date"] || r.InvDate || r.O || r.date;
-    let invDate = parseDateAny(invDateRaw);
+    const invoice   = r.InvoicePath || r.Invoice || r.InvoiceFile || r.InvoiceName || "";
+    const invDateRaw= r.Date || r.InvoiceDate || r["Invoice Date"] || r.InvDate || r.O || r.date;
+    let invDate     = parseDateAny(invDateRaw);
     if (!invDate) invDate = inferDateFromName(r.InvoiceName || r.InvoiceFile || r.InvoicePath);
     const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : "";
 
-    // ✅ robust item code extraction + fallback to description
+    // Try many column names for code
     const rawCode =
       r.ItemCode ?? r["Item Code"] ?? r["Item code"] ??
       r.Code ?? r["Code"] ??
-      r.SKU ?? r["SKU"] ??
+      r.SKU ?? r["SKU"] ?? r.Barcode ?? r["Barcode"] ??
       r.Ref ?? r["Ref"] ?? r.Reference ?? r["Reference"] ??
-      r.Item ?? r["Item"] ?? r["Item #"] ??
-      r["Product Code"] ?? r["Barcode"] ?? r["Article Code"] ?? "";
+      r["Item #"] ?? r.Item ?? r["Product Code"] ?? "";
 
-    const descText = r["Product/Description"] || r.ProductDescription || r.Description || r["Item Description"] || "";
-    const code = String(rawCode || "").trim();
-    const codeKey = code
-      ? code.toUpperCase().replace(/\s+/g,"")
-      : String(descText || "").trim().toUpperCase().slice(0,60); // fallback so items still group
+    // Try many column names for description
+    const descText =
+      r["Product/Description"] ?? r.ProductDescription ?? r["Product Description"] ??
+      r.Description ?? r["Item Description"] ?? r.Designation ?? r["Product Name"] ??
+      r.Article ?? r["Article"] ?? r["Item Name"] ?? "";
+
+    // Make a grouping key that always exists
+    const codeClean = String(rawCode||"").trim();
+    const codeKey = codeClean
+      ? codeClean.toUpperCase().replace(/\s+/g,"")
+      : (String(descText||"").trim().toUpperCase() || "UNKNOWN ITEM");
 
     // human-readable invoice number for diagnostics
     const invFile =
@@ -160,8 +165,8 @@ function normalize(rows){
       typeLabel: typeLabel(r.Type),
 
       invoice,
-      code: codeKey,                        // <-- used by Best Sellers
-      desc: descText,
+      code: codeKey,                // <-- always non-empty now
+      desc: descText || codeClean || "",
 
       qty, unit, line, invTotal: num(r.InvoiceTotal),
 
@@ -176,6 +181,7 @@ function normalize(rows){
     };
   }).filter(o=>Object.values(o).some(v=>v!==""&&v!=null));
 }
+
 
 
 // ---------- filters ----------
