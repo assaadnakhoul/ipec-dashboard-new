@@ -511,5 +511,12 @@ async function main(){
     if (badge) badge.textContent="Error";
   }
 }
+// === drop-in: unique + sorted helper used by buildFilters ===
+function uniqSorted(arr){
+  if (!Array.isArray(arr)) return [];
+  // keep non-empty values, unique them, then sort case-insensitively (numeric-aware)
+  return [...new Set(arr.filter(v => v !== null && v !== undefined && v !== ""))]
+    .sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" }));
+}
 
 main();
