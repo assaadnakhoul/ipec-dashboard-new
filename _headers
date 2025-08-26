@@ -1,0 +1,12 @@
+/index.html
+  Cache-Control: no-store
+
+/app.js
+  Cache-Control: no-store
+
+/config.js
+  Cache-Control: no-store
+
+# let images cache (faster)
+ /public/images/*
+  Cache-Control: public, max-age=31536000, immutable
