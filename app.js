@@ -114,10 +114,20 @@ function normalize(rows){
     const line = r.LineTotal!==undefined && r.LineTotal!=="" ? num(r.LineTotal) : qty*unit;
 
     const invoice   = r.InvoicePath || r.Invoice || r.InvoiceFile || r.InvoiceName || "";
-    const invDateRaw= r.Date || r.InvoiceDate || r["Invoice Date"] || r.InvDate || r.O || r.date;
-    let invDate     = parseDateAny(invDateRaw);
-    if (!invDate) invDate = inferDateFromName(r.InvoiceName || r.InvoiceFile || r.InvoicePath);
-    const ym = invDate ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}` : "";
+    // --- Patched: prefer filename tag for month classification ---
+const invDateRaw = r.Date || r.InvoiceDate || r["Invoice Date"] || r.InvDate || r.O || r.date;
+
+// filename tag (INV-XXX-YYYY or "IPEC Invoice XXX-YYYY") is authoritative
+let invDate = inferDateFromName(r.InvoiceName || r.InvoiceFile || r.InvoicePath || r.Invoice);
+
+// fallback to invoice date cell if no filename tag
+if (!invDate) invDate = parseDateAny(invDateRaw);
+
+const ym = invDate
+  ? `${invDate.getFullYear()}-${String(invDate.getMonth()+1).padStart(2,'0')}`
+  : "";
+// --------------------------------------------------------------
+
 
     const rawCode =
       r.ItemCode ?? r["Item Code"] ?? r["Item code"] ??
