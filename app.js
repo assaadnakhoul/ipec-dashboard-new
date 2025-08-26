@@ -318,23 +318,72 @@ function renderTopClients(el, list, mode){
   });
 }
 function renderBestItems(el, list, mode){
-  if(!el) return;
-  el.innerHTML="";
-  if(!list || list.length===0){
+  if (!el) return;
+  el.innerHTML = "";
+
+  // empty state
+  if (!list || list.length === 0) {
     el.innerHTML = `<div class="muted" style="padding:12px">No items for current filters.</div>`;
     return;
   }
-  list.forEach((it,i)=>{
-    const li=document.createElement("li");
-    li.className="li";
-    li.innerHTML=`${imgHTML(it.code,it.code)}
+
+  const top5  = list.slice(0, 5);
+  const rest  = list.slice(5); // up to 15 more (your list is already top 20)
+
+  // render first 5 directly
+  top5.forEach((it, i) => {
+    const li = document.createElement("li");
+    li.className = "li";
+    li.innerHTML = `${imgHTML(it.code,it.code)}
       <div class="grow">
-        <div class="name">${i+1}. ${esc(it.code)}</div>
-        <div class="muted">${esc(it.desc||"")}</div>
+        <div class="name">${i + 1}. ${esc(it.code)}</div>
+        <div class="muted">${esc(it.desc || "")}</div>
       </div>
-      <div class="value">${mode==="value" ? fmtMoney(it.val) : fmtInt(it.qty)}</div>`;
+      <div class="value">${mode === "value" ? fmtMoney(it.val) : fmtInt(it.qty)}</div>`;
     el.appendChild(li);
   });
+
+  // dropdown for the remaining items
+  if (rest.length > 0) {
+    const details = document.createElement("details");
+    details.className = "show-more";
+
+    const summary = document.createElement("summary");
+    summary.textContent = `Show more (${rest.length})`;
+    summary.style.cursor = "pointer";
+    summary.style.padding = "8px 12px";
+    summary.style.margin = "4px 0";
+    summary.style.borderRadius = "10px";
+    summary.style.background = "var(--panel,#f6f7f9)";
+    summary.style.fontWeight = "600";
+
+    const subList = document.createElement("ul");
+    subList.style.listStyle = "none";
+    subList.style.padding = "0";
+    subList.style.margin = "8px 0 0 0";
+
+    rest.forEach((it, idx) => {
+      const li = document.createElement("li");
+      li.className = "li";
+      li.innerHTML = `${imgHTML(it.code,it.code)}
+        <div class="grow">
+          <div class="name">${(idx + 6)}. ${esc(it.code)}</div>
+          <div class="muted">${esc(it.desc || "")}</div>
+        </div>
+        <div class="value">${mode === "value" ? fmtMoney(it.val) : fmtInt(it.qty)}</div>`;
+      subList.appendChild(li);
+    });
+
+    details.appendChild(summary);
+    details.appendChild(subList);
+    // put the details block as its own row in the list
+    const wrapper = document.createElement("li");
+    wrapper.className = "li";
+    wrapper.style.display = "block";
+    wrapper.style.padding = "0"; // keep compact
+    wrapper.appendChild(details);
+    el.appendChild(wrapper);
+  }
 }
 function renderMonthTable(rows){
   const tbody = document.querySelector('#month-table tbody');
