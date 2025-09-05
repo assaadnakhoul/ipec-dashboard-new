@@ -1,7 +1,8 @@
 /****************************************************
  * IPEC Sales Dashboard — app.js (full drop-in)
  ****************************************************/
-
+// --- Global state ---
+let monthTableSort = { key: "ym", dir: "asc" };
 /* --------------------- utils --------------------- */
 const log = (...a) => {
   console.log(...a);
@@ -389,7 +390,20 @@ function renderMonthTable(rows){
   const tbody = document.querySelector('#month-table tbody');
   if(!tbody) return;
   tbody.innerHTML = "";
-  (rows||[]).forEach(r=>{
+
+  // Sort by current key/dir
+  const key = monthTableSort.key;
+  const dir = monthTableSort.dir === "asc" ? 1 : -1;
+  const sorted = [...(rows||[])].sort((a,b)=>{
+    if (key === "ym") return (a.ym > b.ym ? 1 : -1) * dir;
+    if (key === "invoices") return (a.invoices - b.invoices) * dir;
+    if (key === "qty") return (a.qty - b.qty) * dir;
+    if (key === "turnover") return (a.turnover - b.turnover) * dir;
+    if (key === "avg") return (a.avg - b.avg) * dir;
+    return 0;
+  });
+
+  sorted.forEach(r=>{
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${esc(ymLabel(r.ym))}</td>
@@ -401,6 +415,26 @@ function renderMonthTable(rows){
     tbody.appendChild(tr);
   });
 }
+function updateMonthTableArrows(){
+  const heads = document.querySelectorAll("#month-table thead th");
+  const keys = ["ym","invoices","qty","turnover","avg"];
+
+  heads.forEach((th, idx)=>{
+    const k = keys[idx];
+
+    // Remove old arrows
+    const base = th.textContent.replace(/[\u25B2\u25BC\u2195]$/,"").trim();
+
+    let arrow = " ↕"; // neutral arrow
+    if (monthTableSort.key === k) {
+      arrow = monthTableSort.dir === "asc" ? " ▲" : " ▼";
+    }
+
+    th.textContent = base + arrow;
+  });
+}
+
+
 
 /* ---------------- Diagnostics ------------------- */
 // Clean trailing name (strip extension, tidy separators)
@@ -510,9 +544,35 @@ async function main(){
       renderBestItems(document.getElementById("list-items"),
         state.items==="value" ? agg.bestVal : agg.bestQty, state.items);
 
+        // Per Month Sales table
+window.__lastMonthRows = agg.monthRows;
+renderMonthTable(agg.monthRows);
+
       // Per Month Sales table
       renderMonthTable(agg.monthRows);
+      
     }
+// Make headers clickable for sorting
+document.querySelectorAll("#month-table thead th").forEach((th, idx)=>{
+  th.style.cursor = "pointer";
+  th.style.position = "relative";   // allow arrow placement
+
+  th.addEventListener("click", ()=>{
+    const keys = ["ym","invoices","qty","turnover","avg"];
+    const k = keys[idx];
+
+    if (monthTableSort.key === k) {
+      monthTableSort.dir = (monthTableSort.dir === "asc" ? "desc" : "asc");
+    } else {
+      monthTableSort.key = k;
+      monthTableSort.dir = "asc";
+    }
+
+    renderMonthTable(window.__lastMonthRows || []);
+    updateMonthTableArrows();   // <-- new call
+  });
+});
+
 
     // Filter events
     document.querySelectorAll('input[name="type"]')?.forEach?.(r=>{
@@ -539,6 +599,7 @@ async function main(){
 
     wireCollapsibles();
     recomputeAndRender();
+    updateMonthTableArrows();
   }catch(err){
     log("FATAL:", String(err));
     const badge = document.getElementById("badge-source");
