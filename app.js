@@ -545,13 +545,25 @@ async function main(){
     if (badge) badge.textContent="Error";
   }
 }
-// ---------------- Refresh Button ----------------
-document.getElementById("refresh-btn")?.addEventListener("click", ()=>{
+document.getElementById("refresh-btn")?.addEventListener("click", async ()=>{
   const btn = document.getElementById("refresh-btn");
   if (btn) btn.textContent = "Refreshing…";
-  // Hard reload to re-run main(), rebind listeners, and fetch fresh GAS JSON
+
+  try {
+    // Ping GAS with ?rebuild=1 to trigger BuildMasterIncremental()
+    const base = (window.JSON_URLS && window.JSON_URLS[0]) || "";
+    if (base) {
+      const url = base + (base.includes("?") ? "&" : "?") + "rebuild=1&t=" + Date.now();
+      await fetch(url, { method: "GET", mode: "cors", cache: "no-store" });
+    }
+  } catch (e) {
+    log("Rebuild ping failed:", e);
+  }
+
+  // Hard reload to re-run main() and fetch the freshly rebuilt data
   location.reload();
 });
+
 
 
 main();
