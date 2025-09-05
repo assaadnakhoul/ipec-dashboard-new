@@ -545,5 +545,13 @@ async function main(){
     if (badge) badge.textContent="Error";
   }
 }
+// ---------------- Refresh Button ----------------
+document.getElementById("refresh-btn")?.addEventListener("click", ()=>{
+  const btn = document.getElementById("refresh-btn");
+  if (btn) btn.textContent = "Refreshing…";
+  // Hard reload to re-run main(), rebind listeners, and fetch fresh GAS JSON
+  location.reload();
+});
+
 
 main();
