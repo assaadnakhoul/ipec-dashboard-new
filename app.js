@@ -14,6 +14,7 @@ const fmtInt   = n => (n ?? 0).toLocaleString();
 const fmtDate  = d => !d ? "—" : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 const esc      = s => String(s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const ymLabel  = ym => ym || "—";
+const fmtUSD  = n => (n ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " $";
 
 function num(x){
   if(x==null) return 0;
@@ -315,9 +316,31 @@ function renderTopClients(el, list, mode){
     li.className="li";
     li.innerHTML=`<div class="grow"><div class="name">${i+1}. ${esc(name||"Unknown")}</div></div>
       <div class="value">${mode==="value" ? fmtMoney(amt) : fmtInt(amt)}</div>`;
+
+    // Only for clients lists (A or B), not suppliers:
+    const listId = el.id || "";
+    const t = (listId === "list-topA") ? "A" : (listId === "list-topB") ? "B" : null;
+    if (t) {
+      const btn = document.createElement("button");
+      btn.className = "badge";
+      btn.textContent = "Details";
+      btn.style.marginLeft = "8px";
+      btn.addEventListener("click", (ev)=>{
+        ev.stopPropagation();
+        const clientName = name || "";
+        const data = (window.__currentFiltered || []).filter(r =>
+          r.type === t && (r.client === clientName || r.phone === clientName)
+        );
+        const { invoiceList, itemsByInvoice } = buildInvoiceViews(data);
+        showInvoiceDetailsModal(invoiceList, itemsByInvoice);
+      });
+      li.appendChild(btn);
+    }
+
     el.appendChild(li);
   });
 }
+
 function renderBestItems(el, list, mode){
   if (!el) return;
   el.innerHTML = "";
@@ -503,6 +526,27 @@ function wireCollapsibles(){
     });
   });
 }
+function buildInvoiceViews(rows){
+  const invTotals = new Map();
+  const itemsByInvoice = new Map();
+  for (const r of rows || []) {
+    const inv = r.invoiceName || r.invoiceFile || r.invoice || "";
+    if (!inv) continue;
+    const line = Number(r.line || ((r.qty||0) * (r.unit||0)) || 0);
+    invTotals.set(inv, (invTotals.get(inv) || 0) + line);
+
+    if (!itemsByInvoice.has(inv)) itemsByInvoice.set(inv, []);
+    itemsByInvoice.get(inv).push({
+      code: String(r.code || "").trim(),
+      qty: Number(r.qty || 0),
+      unitPrice: Number(r.unit || 0),     // ← from col I (UnitPrice)
+      desc: r.desc || ""                  // ← from col G (Product/Description)
+    });
+  }
+  const invoiceList = Array.from(invTotals, ([invoice, total]) => ({ invoice, total }))
+    .sort((a,b)=> String(a.invoice).localeCompare(String(b.invoice), undefined, {numeric:true, sensitivity:"base"}));
+  return { invoiceList, itemsByInvoice };
+}
 
 /* -------------------- main ---------------------- */
 async function main(){
@@ -521,6 +565,9 @@ async function main(){
 
     function recomputeAndRender(){
       const filtered = applyFilters(all);
+      window.__currentFiltered = filtered;
+window.__currentAll = all;
+
       const agg = aggregate(filtered);
 
       // KPIs
@@ -620,10 +667,115 @@ document.getElementById("refresh-btn")?.addEventListener("click", async ()=>{
   } catch (e) {
     log("Rebuild ping failed:", e);
   }
+document.getElementById("invoices-btn")?.addEventListener("click", () => {
+  const data = window.__currentFiltered || [];
+  const { invoiceList, itemsByInvoice } = buildInvoiceViews(data);
+  showInvoiceDetailsModal(invoiceList, itemsByInvoice);
+});
 
   // Hard reload to re-run main() and fetch the freshly rebuilt data
   location.reload();
 });
+
+function showInvoiceDetailsModal(invoiceList, itemsByInvoice) {
+  // guard
+  if (!Array.isArray(invoiceList) || !itemsByInvoice) return;
+
+  // ----- helpers -------------------------------------------------------------
+  const byInv = new Map(itemsByInvoice); // ensure Map-like
+  function renderItemsFor(inv) {
+    const items = byInv.get(inv) || [];
+    const html = items.map(x => {
+      const code = esc(x.code || "");
+      const qty  = Number(x.qty || 0);
+      const up   = Number(x.unitPrice || 0);        // unit price (col I)
+      const line = up * qty;
+
+      // prefer row description (col G); fallback to Items lookup if you have getDesc()
+      const desc = (x.desc && String(x.desc)) || (typeof getDesc === "function" ? getDesc(code) : "");
+
+      return `
+        <li class="inv-item">
+          ${typeof imgHTML === "function" ? imgHTML(code, code) : ""}
+          <div class="grow">
+            <div class="title">
+              <strong>${code}</strong>
+              <span class="chip" style="margin-left:6px">Qty ${fmtInt(qty)}</span>
+            </div>
+            <div class="desc-line">${esc(desc || "")}</div>
+            <div class="price-line">
+              Unit: <strong>${fmtUSD(up)}</strong>
+              &nbsp;—&nbsp; Line: <strong>${fmtUSD(line)}</strong>
+            </div>
+          </div>
+        </li>`;
+    }).join("") || `<div class="muted tiny">No items for this invoice.</div>`;
+    return `<ul class="list">${html}</ul>`;
+  }
+
+  // initial selection (first invoice)
+  let selected = invoiceList[0]?.invoice || null;
+
+  // ----- build overlay -------------------------------------------------------
+  const overlay = document.createElement("div");
+  overlay.className = "inv-modal-overlay";
+  overlay.innerHTML = `
+    <section class="inv-modal" role="dialog" aria-modal="true" aria-label="Invoice details">
+      <div class="inv-modal-header">
+        <div><strong>Invoice Details</strong></div>
+        <button class="close-x" aria-label="Close">&times;</button>
+      </div>
+      <div class="inv-modal-body">
+        <div class="inv-list">
+          ${invoiceList.map(row => {
+            const inv = esc(row.invoice || "");
+            const amt = fmtUSD(Number(row.total || 0));
+            const active = (row.invoice === selected) ? "active" : "";
+            return `<div class="inv-row ${active}" data-inv="${inv}">
+                      <span>${inv}</span>
+                      <strong class="chip">${amt}</strong>
+                    </div>`;
+          }).join("")}
+        </div>
+        <div class="inv-items">
+          ${selected ? renderItemsFor(selected) : `<div class="muted tiny">Select an invoice to view items.</div>`}
+        </div>
+      </div>
+    </section>
+  `;
+
+  // scroll lock
+  const prevOverflow = document.documentElement.style.overflow;
+  document.documentElement.style.overflow = "hidden";
+
+  document.body.appendChild(overlay);
+
+  // ----- wiring --------------------------------------------------------------
+  const closeBtn = overlay.querySelector(".close-x");
+  function closeModal(){
+    overlay.remove();
+    document.documentElement.style.overflow = prevOverflow || "";
+    window.removeEventListener("keydown", onKey);
+  }
+  function onKey(e){ if (e.key === "Escape") closeModal(); }
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeModal();
+  });
+  closeBtn.addEventListener("click", closeModal);
+  window.addEventListener("keydown", onKey);
+
+  // click invoice rows to switch the right pane
+  overlay.querySelectorAll(".inv-row").forEach(rowEl => {
+    rowEl.addEventListener("click", () => {
+      overlay.querySelectorAll(".inv-row").forEach(x => x.classList.remove("active"));
+      rowEl.classList.add("active");
+      selected = rowEl.getAttribute("data-inv") || null;
+      const right = overlay.querySelector(".inv-items");
+      right.innerHTML = selected ? renderItemsFor(selected) : "";
+    });
+  });
+}
 
 
 

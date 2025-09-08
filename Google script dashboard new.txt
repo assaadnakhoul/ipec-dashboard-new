@@ -12,14 +12,15 @@
  *   Meta (labels in col A): Invoice n° / Date / Bill to|Customer|Client / Phone
  *
  * PARITY LOGIC
- *   Process the latest month tag (YYYY) in A first, then B.
- *   A is considered "present in master" if name OR url OR normalized name matches.
- *   B is considered "present in master" only if BOTH name AND url match (strict).
+ *   Process tags (MMYY) from START_TAG (default 0125) up to the last tag present in either folder.
+ *   For each tag: process A first, then B.
+ *   A is “present” if name OR url OR normalized name matches.
+ *   B is “present” only if BOTH name AND url match.
  *
  * Also:
- *   - Owner-agnostic Drive listing (works in "Shared with me"), All Drives.
+ *   - Owner-agnostic Drive listing (works in “Shared with me”), All Drives.
  *   - Items enrichment from Items tab (ItemCode→Supplier[G], Category[D], Sub-category[E]).
- *   - Triggers every 30 min (Mon–Sat, 08:00–17:30) for builder + Items copier.
+ *   - Time/batch guards + auto-continue trigger inside office window.
  *****************************************************************************/
 
 const CFG = {
@@ -28,7 +29,7 @@ const CFG = {
   folderBId: '1q2I1jiFyTACvxjG82v89qPl0_9QsrXCg',
 
   // -------- MASTER --------
-  MASTER_SHEET_ID: '1jp8Lf87sGan89ZuvT5X7tCreXFnkXDeTOnNwGkJDAik',
+  MASTER_SHEET_ID: '1YGexar8HPS46hMDGXeajmfFfk9-sbuYUdEP-04HvRj4',
   MASTER_TAB: 'Sheet1',
   OUT_HEAD: [
     'InvoiceName','InvoicePath','Type','Client','Phone','ItemCode','ProductDescription',
@@ -57,49 +58,101 @@ const CFG = {
   PROP_ITEMS_LAST_SRC_ROW: 'ITEMS_LAST_SRC_ROW',
 
   // -------- CHUNKING / TIME GUARD --------
-  MAX_FILES_PER_RUN: 500,
-  TIME_GUARD_MS: 5 * 60 * 1000
-};
-const API_KEY = '09214534';
+  MAX_FILES_PER_RUN: 100,
+  TIME_GUARD_MS: 240000,   // 4 minutes
 
-// helper to always emit JSON (and avoid HTML error pages)
-function jsonOut(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
+  // -------- TAG CURSOR --------
+  START_TAG: '0125',
+  PROP_RUN_TAG_CURSOR: 'RUN_TAG_CURSOR'
+};
+
+/* ========================= Window & Auto-continue helpers ========================= */
+
+// Only run Mon–Sat, 08:00–17:30
+function withinWindow_() {
+  const now = new Date();
+  const dow = now.getDay();              // 0=Sun .. 6=Sat
+  if (dow === 0) return false;           // exclude Sunday
+  const mins = now.getHours() * 60 + now.getMinutes();
+  return mins >= 8 * 60 && mins <= 17 * 60 + 30; // 08:00 .. 17:30
 }
-/* =============================== MAIN BUILDER =============================== */
+function nextAllowedTime_() {
+  const now = new Date();
+  if (withinWindow_()) {
+    const d = new Date(now);
+    const m = d.getMinutes();
+    const add = (m % 30 === 0 && d.getSeconds() < 20) ? 0 : (30 - (m % 30));
+    d.setMinutes(m + add, 10, 0);  // next :00/:30 + 10s
+    return d;
+  }
+  const d = new Date(now);
+  d.setSeconds(0, 0);
+  const mins = d.getHours() * 60 + d.getMinutes();
+  if (mins > 17 * 60 + 30) d.setDate(d.getDate() + 1);
+  d.setHours(8, 0, 10, 0);
+  while (d.getDay() === 0) d.setDate(d.getDate() + 1); // skip Sunday
+  return d;
+}
+
+function scheduleAutoContinue_() {
+  try {
+    // Best effort delete old trigger (ignore if scope missing)
+    try {
+      ScriptApp.getProjectTriggers()
+        .filter(t => t.getHandlerFunction && t.getHandlerFunction() === 'BuildMasterIncremental_Gated' &&
+                     t.getEventType && t.getEventType() === ScriptApp.EventType.CLOCK)
+        .forEach(t => { try { ScriptApp.deleteTrigger(t); } catch (_) {} });
+    } catch (e) {
+      Logger.log('scheduleAutoContinue_: cannot list/delete triggers (scope?): ' + e);
+    }
+
+    // Create next run trigger
+    try {
+      const when = nextAllowedTime_();
+      ScriptApp.newTrigger('BuildMasterIncremental_Gated').timeBased().at(when).create();
+      Logger.log('Auto-continue scheduled for: ' + when);
+    } catch (e) {
+      Logger.log('scheduleAutoContinue_: cannot create trigger (scope?): ' + e);
+    }
+  } catch (err) {
+    Logger.log('scheduleAutoContinue_ general error: ' + err);
+  }
+}
+
+/* =============================== MAIN BUILDER (cursor-aware) =============================== */
 
 function BuildMasterIncremental() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) { Logger.log('Lock busy; skipping.'); return; }
 
+  const props = PropertiesService.getDocumentProperties();
   try {
     const ss = openSpreadsheetWithRetry_(CFG.MASTER_SHEET_ID);
     const sh = getOrCreateSheetWithHeader_(ss, CFG.MASTER_TAB, CFG.OUT_HEAD);
+    cleanMasterVisuals_(sh); // keep master UI honest
 
-    // Latest tag/number in each folder (by filename)
-    const fA = getFolderMaxInfo_(CFG.folderAId, parseInvAInfo_); // {num, tag} or {0,''}
-    const fB = getFolderMaxInfo_(CFG.folderBId, parseInvBInfo_);
-    Logger.log(`Folder maxima → A=${fA.num || 0}-${fA.tag || '----'}  B=${fB.num || 0}-${fB.tag || '----'}`);
+    // Discover tags across both folders
+    const tagsUniverse = collectAllTags_(CFG.folderAId, CFG.folderBId, parseInvAInfo_, parseInvBInfo_);
+    if (!tagsUniverse.length) { Logger.log('No tags found in folders.'); return; }
+    const maxTag = tagsUniverse[tagsUniverse.length - 1];
+
+    // Start from saved cursor or configured START_TAG
+    let cursor = props.getProperty(CFG.PROP_RUN_TAG_CURSOR) || CFG.START_TAG || maxTag;
+
+    // Tags to work on: from cursor to maxTag (inclusive)
+    const workTags = tagsUniverse.filter(t => t >= cursor && t <= maxTag);
+    if (!workTags.length) { Logger.log('Nothing to do (no tags >= cursor).'); return; }
 
     const enrich = loadItemsMap_(ss);
     const t0 = Date.now();
     let processed = 0;
 
-    // Import only files missing in Master for given Type+tag
+    // Process one folder for a given tag
     const processFolderByMissing = (folderId, whereLabel, parseInfoFn, tag, rowReader, metaReader) => {
-      if (!tag) { Logger.log(`Folder ${whereLabel}: no Excel files.`); return true; }
+      const folderFiles = listFolderFilesForTag_(folderId, parseInfoFn, tag);
+      const presence    = listMasterPresenceForTypeTag_(sh, whereLabel, tag);
 
-      // All Excel files for this tag (owner-agnostic; All Drives)
-      const folderFiles = listFolderFilesForTag_(folderId, parseInfoFn, tag); // [{file,num,tag}]
-      Logger.log(`Folder ${folderId} tag ${tag}: found ${folderFiles.length} Excel file(s) across all drives.`);
-
-      // What Master already has for this Type & tag
-      const presence = listMasterPresenceForTypeTag_(sh, whereLabel, tag); // {names:Set, urls:Set, normNames:Set}
-
-      // Missing rule:
-      //  - A: present if name OR url OR normalized-name matches
-      //  - B: present only if BOTH name AND url match
+      // Build "missing" list based on presence
       const missing = folderFiles
         .filter(x => {
           const n  = x.file.getName();
@@ -110,15 +163,38 @@ function BuildMasterIncremental() {
         })
         .sort((a,b) => a.num - b.num);
 
-      Logger.log(`Folder ${whereLabel} ${tag}: ${missing.length} missing (${missing.map(x=>x.num).join(', ') || 'none'})`);
+      logStep_('MISS', `Folder ${whereLabel} ${tag}`, { missing: missing.length, nums: missing.map(x=>x.num) });
 
-      for (let i = 0; i < missing.length; i++) {
+      // --- In-run de-dupe by name/url/normalized-name ---
+      const seenRunNames = new Set(presence.names);
+      const seenRunUrls  = new Set(presence.urls);
+      const seenRunNN    = new Set(presence.normNames);
+
+      const missingDedup = [];
+      for (const m of missing) {
+        const nm = m.file.getName();
+        const url = m.file.getUrl();
+        const nn  = normalizeName_(nm);
+        const already = (whereLabel === 'B')
+          ? (seenRunNames.has(nm) && seenRunUrls.has(url))
+          : (seenRunNames.has(nm) || seenRunUrls.has(url) || seenRunNN.has(nn));
+        if (already) continue;
+        seenRunNames.add(nm);
+        seenRunUrls.add(url);
+        seenRunNN.add(nn);
+        missingDedup.push(m);
+      }
+      logStep_('MISS', `After in-run de-dupe`, { toImport: missingDedup.length });
+
+      // Iterate ONLY the deduped list
+      for (let i = 0; i < missingDedup.length; i++) {
         if (processed >= CFG.MAX_FILES_PER_RUN || (Date.now() - t0) > CFG.TIME_GUARD_MS) {
+          props.setProperty(CFG.PROP_RUN_TAG_CURSOR, tag); // resume same tag next run
           scheduleAutoContinue_();
-          return false; // stop now; resume next run
+          return false;
         }
 
-        const { file } = missing[i];
+        const { file } = missingDedup[i];
         const fileName = file.getName();
         const fileUrl  = file.getUrl();
 
@@ -127,6 +203,8 @@ function BuildMasterIncremental() {
           try {
             const dataSh = pickDataSheet_(openRes.spreadsheet);
             if (!dataSh) { processed++; continue; }
+
+            ensureSheetReadable_(dataSh);
 
             const values = readRangeValuesWithRetry_(dataSh.getDataRange());
             const rows   = rowReader(values);
@@ -141,11 +219,22 @@ function BuildMasterIncremental() {
                 fileName, fileUrl, whereLabel,
                 meta.client, meta.phone,
                 r.itemCode, r.description, r.qty, r.unitPrice, r.lineTotal,
-                meta.invoiceTotal, enr.supplier, enr.category, enr.subcategory, meta.date
+                meta.invoiceTotal, enr.supplier, enr.category, enr.subcategory,
+                _parseToDateOnly_(meta.date, Session.getScriptTimeZone())
               ];
             });
 
-            sh.getRange(sh.getLastRow()+1, 1, block.length, CFG.OUT_HEAD.length).setValues(block);
+            // Write ONCE, then format Date column (O)
+            const startRow = sh.getLastRow() + 1;
+            sh.getRange(startRow, 1, block.length, CFG.OUT_HEAD.length).setValues(block);
+            sh.getRange(startRow, 15, block.length, 1).setNumberFormat('dd/MM/yyyy');
+
+            // Update presence so later files in this same run see it as present
+            presence.names.add(fileName);
+            presence.urls.add(fileUrl);
+            presence.normNames.add(normalizeName_(fileName));
+
+            logStep_('APPEND', 'Rows appended', { file: fileName, count: block.length, tag, type: whereLabel });
           } finally {
             if (CFG.CLEANUP_TEMP_IMPORTS && openRes.toDelete) {
               try { Drive.Files.delete(openRes.toDelete, { supportsAllDrives:true }); } catch (_) {}
@@ -154,21 +243,38 @@ function BuildMasterIncremental() {
         } catch (e) {
           Logger.log('Failed on file ' + fileName + ' → ' + (e && e.message ? e.message : e));
         }
-
         processed++;
       }
-
-      return true; // no more missing for this tag
+      return true;
     };
 
-    // Always process A first, then B
-    if (!processFolderByMissing(CFG.folderAId, 'A', parseInvAInfo_, fA.tag, readItemsA_, metaA_)) return;
-    if (!processFolderByMissing(CFG.folderBId, 'B', parseInvBInfo_, fB.tag, readItemsB_, metaB_)) return;
+    // Iterate tags: A then B
+    for (let ti = 0; ti < workTags.length; ti++) {
+      const tag = workTags[ti];
+      logStep_('TAG', 'Processing tag', { tag });
 
-    Logger.log('Done (missing-number; A uses name/url/normalized-name, B uses strict name+url).');
+      if (!processFolderByMissing(CFG.folderAId, 'A', parseInvAInfo_, tag, readItemsA_, metaA_)) return;
+      if (!processFolderByMissing(CFG.folderBId, 'B', parseInvBInfo_, tag, readItemsB_, metaB_)) return;
+
+      // Tag complete → advance cursor
+      const next = workTags[ti + 1];
+      if (next) props.setProperty(CFG.PROP_RUN_TAG_CURSOR, next);
+      else props.deleteProperty(CFG.PROP_RUN_TAG_CURSOR);
+
+      if ((Date.now() - t0) > CFG.TIME_GUARD_MS) { scheduleAutoContinue_(); return; }
+    }
+
+    logStep_('DONE', 'All tags completed', { from: CFG.START_TAG, to: maxTag, processed });
+    purgeOldTempImports_(7);
+
   } finally {
     lock.releaseLock();
   }
+}
+
+function BuildMasterIncremental_Gated() {
+  if (!withinWindow_()) { Logger.log('Outside window; skipping BuildMasterIncremental'); return; }
+  BuildMasterIncremental();
 }
 
 /* ====================== Items updater (Synthèse → Items) ====================== */
@@ -207,79 +313,13 @@ function UpdateItemsFromSyntheseIncremental() {
   }
 }
 
-/* ========================= Windowed wrappers & triggers ========================= */
-
-// Only run Mon–Sat, 08:00–17:30
-function withinWindow_() {
-  const now = new Date();
-  const dow = now.getDay();              // 0=Sun .. 6=Sat
-  if (dow === 0) return false;           // exclude Sunday
-  const mins = now.getHours() * 60 + now.getMinutes();
-  return mins >= 8 * 60 && mins <= 17 * 60 + 30; // 08:00 .. 17:30
-}
-function nextAllowedTime_() {
-  const now = new Date();
-  if (withinWindow_()) {
-    const d = new Date(now);
-    const m = d.getMinutes();
-    const add = (m % 30 === 0 && d.getSeconds() < 20) ? 0 : (30 - (m % 30));
-    d.setMinutes(m + add, 10, 0);  // next :00/:30 + 10s
-    return d;
-  }
-  const d = new Date(now);
-  d.setSeconds(0, 0);
-  const mins = d.getHours() * 60 + d.getMinutes();
-  if (mins > 17 * 60 + 30) d.setDate(d.getDate() + 1);
-  d.setHours(8, 0, 10, 0);
-  while (d.getDay() === 0) d.setDate(d.getDate() + 1); // skip Sunday
-  return d;
-}
-
-function BuildMasterIncremental_Gated() {
-  if (!withinWindow_()) { Logger.log('Outside window; skipping BuildMasterIncremental'); return; }
-  BuildMasterIncremental();
-}
 function UpdateItemsFromSyntheseIncremental_Gated() {
   if (!withinWindow_()) { Logger.log('Outside window; skipping UpdateItemsFromSyntheseIncremental'); return; }
   UpdateItemsFromSyntheseIncremental();
 }
 
-function scheduleAutoContinue_() {
-  try {
-    ScriptApp.getProjectTriggers()
-      .filter(t =>
-        t.getHandlerFunction && t.getHandlerFunction() === 'BuildMasterIncremental_Gated' &&
-        t.getEventType && t.getEventType() === ScriptApp.EventType.CLOCK
-      )
-      .forEach(t => { try { ScriptApp.deleteTrigger(t); } catch (_) {} });
-
-    const when = nextAllowedTime_();
-    ScriptApp.newTrigger('BuildMasterIncremental_Gated').timeBased().at(when).create();
-    Logger.log('Auto-continue scheduled for: ' + when);
-  } catch (err) {
-    Logger.log('Auto-continue skipped: ' + err);
-  }
-}
-
-function CreateAllTriggers30_Windowed() {
-  ScriptApp.getProjectTriggers().forEach(t => {
-    const fn = t.getHandlerFunction && t.getHandlerFunction();
-    if (fn === 'BuildMasterIncremental' ||
-        fn === 'UpdateItemsFromSyntheseIncremental' ||
-        fn === 'BuildMasterIncremental_Gated' ||
-        fn === 'UpdateItemsFromSyntheseIncremental_Gated') {
-      try { ScriptApp.deleteTrigger(t); } catch (_) {}
-    }
-  });
-  ScriptApp.newTrigger('BuildMasterIncremental_Gated').timeBased().everyMinutes(30).create();
-  ScriptApp.newTrigger('UpdateItemsFromSyntheseIncremental_Gated').timeBased().everyMinutes(30).create();
-  Logger.log('Windowed 30-min triggers created (Mon–Sat, 08:00–17:30).');
-}
-
 /* =============================== Web JSON endpoint =============================== */
 
-// === Helper: fetch a tab via CSV export (owner-agnostic) ===
-// Authenticated CSV export (handles private Sheets)
 function fetchSheetCsv_(sheetId, gid) {
   const url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
   const resp = UrlFetchApp.fetch(url, {
@@ -294,16 +334,47 @@ function fetchSheetCsv_(sheetId, gid) {
   if (/<html[\s>]/i.test(text)) throw new Error('CSV export returned HTML (auth/permission issue).');
   return Utilities.parseCsv(text);
 }
-function doGet(e){
+
+function resolveMasterGid_(sheetId, preferredTabName) {
+  const ss = SpreadsheetApp.openById(sheetId);
+  if (preferredTabName) {
+    const sh = ss.getSheetByName(preferredTabName);
+    if (sh) return { gid: String(sh.getSheetId()), name: sh.getName(), score: 999 };
+  }
+  const wanted = new Set(EXPECTED_MASTER_HEADERS.map(_norm));
+  let best = { gid: '0', name: '', score: -1 };
+  ss.getSheets().forEach(sh => {
+    const n = Math.min(sh.getLastColumn(), 50);
+    if (n < 2) return;
+    const headers = sh.getRange(1,1,1,n).getValues()[0];
+    const score = headers.reduce((s,h)=> s + (wanted.has(_norm(h)) ? 1 : 0), 0);
+    if (score > best.score) best = { gid: String(sh.getSheetId()), name: sh.getName(), score };
+  });
+  return best;
+}
+
+function doGet(e) {
   try {
-    const p       = (e && e.parameter) || {};
-    const sheetId = CFG.MASTER_SHEET_ID;
+    const p = (e && e.parameter) || {};
 
-    // --- resolve gid of MASTER_TAB (or best match) ---
+    // Optional rebuild via webapp ?rebuild=1
+    const wantRebuild = String(p.rebuild || p.refresh || "") === "1";
+    if (wantRebuild) {
+      const lock = LockService.getScriptLock();
+      if (lock.tryLock(280000)) {
+        try { BuildMasterIncremental(); }
+        catch (err) { console.error("BuildMasterIncremental failed:", err); }
+        finally { lock.releaseLock(); }
+      }
+    }
+
+    const sheetId  = CFG.MASTER_SHEET_ID;   // <-- use config
+    const masterTab = CFG.MASTER_TAB;
+
+    // resolve gid of MASTER_TAB (or best match)
     let meta = { gid: p.gid || '' , name: '', score: -1 };
-    if (!meta.gid) meta = resolveMasterGid_(sheetId, CFG.MASTER_TAB);
+    if (!meta.gid) meta = resolveMasterGid_(sheetId, masterTab);
 
-    // --- CSV → rows (with OAuth) ---
     const rows = fetchSheetCsv_(sheetId, meta.gid);
     if (!rows || rows.length < 2) {
       return ContentService.createTextOutput(JSON.stringify({
@@ -311,18 +382,12 @@ function doGet(e){
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Column positions (A..O): keep in sync with your OUT_HEAD
-    // A InvoiceName, B InvoicePath, C Type, D Client, E Phone, F ItemCode,
-    // G ProductDescription, H Qty, I UnitPrice, J LineTotal, K InvoiceTotal,
-    // L Supplier, M Category, N Sub-category, O InvoiceDate
+    // Column positions (A..O)
     const A=0,B=1,C=2,D=3,E=4,F=5,G=6,H=7,I=8,J=9,K=10,L=11,M=12,N=13,O=14;
 
     const data = rows.slice(1).map(r => ({
-      // identifiers
       InvoiceName:           r[A] || '',
       InvoicePath:           r[B] || '',
-
-      // core fields
       Type:                  r[C] || '',
       Client:                r[D] || '',
       Phone:                 r[E] || '',
@@ -332,13 +397,9 @@ function doGet(e){
       UnitPrice:             r[I] || 0,
       LineTotal:             r[J] || '',
       InvoiceTotal:          r[K] || '',
-
-      // ✅ exact columns you requested
       Supplier:              r[L] || '',
       Category:              r[M] || '',
       'Sub-category':        r[N] || '',
-
-      // ✅ date source for Month filter
       Date:                  r[O] || ''
     }));
 
@@ -354,21 +415,50 @@ function doGet(e){
   }
 }
 
-/* ================================ Readers & Meta (DROP-IN) ================================ */
+// Minimal helpers for doPost() compatibility if you use it
+function _json(obj){ return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
+function withLock_(fn){ const lock=LockService.getScriptLock(); if(!lock.tryLock(30*1000)) return _json({ok:false,error:'busy'}); try{ return fn(); } finally{ lock.releaseLock(); } }
+function requireAuth_(_e){ /* no-op placeholder; add auth if needed */ }
 
-// tiny normalizer for label matching
+function doPost(e) {
+  return withLock_(() => {
+    try {
+      requireAuth_(e);
+      const body = e.postData && e.postData.contents ? JSON.parse(e.postData.contents) : {};
+      const action = String(body.action || '').toLowerCase();
+
+      if (action === 'ensureclient') {
+        const info = ensureClient_ ? ensureClient_(body.client || {}) : { ok:false, error:'ensureClient_ not implemented' };
+        return _json({ ok: true, ...info });
+      }
+
+      if (action === 'createinvoice') {
+        const inv   = body.invoice || {};
+        const items = body.items   || [];
+        const clt   = body.client  || {};
+        const out   = createInvoiceFromTemplate_ ? createInvoiceFromTemplate_(inv, items, clt) : { ok:false, error:'createInvoiceFromTemplate_ not implemented' };
+        return _json(out);
+      }
+
+      return _json({ ok: false, error: 'Unknown action. Use action=ensureClient or action=createInvoice' });
+    } catch (err) {
+      return _json({ ok: false, error: String(err && err.message || err), stack: (err && err.stack) || null });
+    }
+  });
+}
+
+/* ================================ Readers & Meta ================================ */
+
 function _normLbl_(s) {
   return toStr(s)
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // strip accents
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .toLowerCase().replace(/\s+/g,' ').trim();
 }
 
-// A invoices: items start at row 12; read A..E; description ALWAYS from col B; stop on blank or TOTAL line
+// A invoices
 function readItemsA_(values) {
   const isHeaderish = row => {
-    const a = _normLbl_(row[0]);
-    const b = _normLbl_(row[1]);
-    const c = _normLbl_(row[2]);
+    const a = _normLbl_(row[0]), b = _normLbl_(row[1]), c = _normLbl_(row[2]);
     return (a === 'model' || a === 'item code' || a === 'code') ||
            (b === 'description' || b === 'designation' || b === 'desc' || b === 'الوصف') ||
            (c === 'qty' || c === 'quantity' || c === 'الكمية');
@@ -389,9 +479,9 @@ function readItemsA_(values) {
     if (stopOnTotal(row)) break;
 
     const itemCode  = toStr(row[0]).trim();
-    const desc      = toStr(row[1]).trim(); // ← force from column B
-    if (!itemCode && !desc) break;          // end of items
-    if (isHeaderish(row)) continue;         // skip header line
+    const desc      = toStr(row[1]).trim(); // force from column B
+    if (!itemCode && !desc) break;
+    if (isHeaderish(row)) continue;
 
     const qty       = row[2];
     const unitPrice = row[3];
@@ -402,7 +492,6 @@ function readItemsA_(values) {
 }
 
 function metaA_(values) {
-  // 1) fast-path fixed cells (your template)
   const get = (r,c) => toStr((values[r]||[])[c]).trim();
   let invoice     = get(0,1);   // B1
   let date        = get(1,1);   // B2
@@ -410,7 +499,6 @@ function metaA_(values) {
   let phone       = get(4,1);   // B5
   let invoiceTotal= get(7,1);   // B8
 
-  // 2) fallbacks: scan first ~35 rows for labeled pairs in A:label / B:value
   const top = Math.min(values.length, 35);
   const lab = {
     inv: new Set(['invoice n°','invoice no','invoice #','invoice','facture','facture n°','n° facture','فاتورة','رقم الفاتورة']),
@@ -421,11 +509,8 @@ function metaA_(values) {
 
   const getByLabel = (labels) => {
     for (let r = 0; r < top; r++) {
-      const a = _normLbl_(values[r]?.[0]);
-      if (labels.has(a)) return toStr(values[r]?.[1]).trim();
-      // also support B:label / C:value
-      const b = _normLbl_(values[r]?.[1]);
-      if (labels.has(b)) return toStr(values[r]?.[2]).trim();
+      const a = _normLbl_(values[r]?.[0]); if (labels.has(a)) return toStr(values[r]?.[1]).trim();
+      const b = _normLbl_(values[r]?.[1]); if (labels.has(b)) return toStr(values[r]?.[2]).trim();
     }
     return '';
   };
@@ -435,7 +520,6 @@ function metaA_(values) {
   if (!client)  client  = getByLabel(lab.cli);
   if (!phone)   phone   = getByLabel(lab.tel);
 
-  // total fallback: look for TOTAL/SUBTOTAL anywhere in top 120 cells and read right neighbor
   if (!invoiceTotal) {
     outer: for (let r = 0; r < Math.min(values.length, 120); r++) {
       const row = values[r] || [];
@@ -453,11 +537,11 @@ function metaA_(values) {
   return { invoice, date, client, phone, invoiceTotal };
 }
 
-// B invoices: auto-detect header; read A..E; description ALWAYS from col B; stop at SUBTOTAL/TOTAL
+// B invoices
 function readItemsB_(values) {
   const isHeaderA = s => ['item code','item','code'].includes(_normLbl_(s));
   const isHeaderB = s => ['description','designation','desc','الوصف'].includes(_normLbl_(s));
-  const isHeaderC = s => _normLbl_((s)) === 'qty' || _normLbl_(s) === 'quantity' || _normLbl_(s) === 'الكمية';
+  const isHeaderC = s => _normLbl_(s) === 'qty' || _normLbl_(s) === 'quantity' || _normLbl_(s) === 'الكمية';
   const isHeaderD = s => _normLbl_(s).replace(/\s+/g,'') === 'u.price';
   const isHeaderE = s => _normLbl_(s).replace(/\s+/g,'') === 't.price';
 
@@ -478,9 +562,7 @@ function readItemsB_(values) {
     return false;
   };
   const isHeaderish = row => {
-    const a = _normLbl_(row[0]);
-    const b = _normLbl_(row[1]);
-    const c = _normLbl_(row[2]);
+    const a = _normLbl_(row[0]), b = _normLbl_(row[1]), c = _normLbl_(row[2]);
     return (a === 'item code' || a === 'item' || a === 'code') ||
            (b === 'description' || b === 'designation' || b === 'desc' || b === 'الوصف') ||
            (c === 'qty' || c === 'quantity' || c === 'الكمية');
@@ -492,7 +574,7 @@ function readItemsB_(values) {
     if (stopOnLabel(row)) break;
 
     const itemCode  = toStr(row[0]).trim();
-    const desc      = toStr(row[1]).trim(); // ← force from column B
+    const desc      = toStr(row[1]).trim();
     if (!itemCode && !desc) break;
     if (isHeaderish(row)) continue;
 
@@ -506,8 +588,6 @@ function readItemsB_(values) {
 
 function metaB_(values) {
   const topRows = Math.min(values.length, 40);
-
-  // supported labels (EN/FR/AR)
   const labs = {
     inv:  new Set(['invoice n°','invoice no','invoice #','invoice','facture','facture n°','n° facture','فاتورة','رقم الفاتورة']),
     date: new Set(['date','invoice date','تاريخ','تاريخ الفاتورة']),
@@ -517,15 +597,12 @@ function metaB_(values) {
 
   const readLabeled = (labels) => {
     for (let r = 0; r < topRows; r++) {
-      const A = _normLbl_(values[r]?.[0]);      // label in col A
-      if (labels.has(A)) return toStr(values[r]?.[1]).trim();
-      const B = _normLbl_(values[r]?.[1]);      // or label in col B
-      if (labels.has(B)) return toStr(values[r]?.[2]).trim();
+      const A = _normLbl_(values[r]?.[0]); if (labels.has(A)) return toStr(values[r]?.[1]).trim();
+      const B = _normLbl_(values[r]?.[1]); if (labels.has(B)) return toStr(values[r]?.[2]).trim();
     }
     return '';
   };
 
-  // total: scan top ~120 rows for TOTAL/SUBTOTAL (multi-language), take right neighbor
   let total = '';
   outer: for (let r = 0; r < Math.min(values.length, 120); r++) {
     const row = values[r] || [];
@@ -548,48 +625,17 @@ function metaB_(values) {
   };
 }
 
-
 /* ================================ Parsing / Listing ================================ */
 
-// Parse “INV-XXX-YYYY” → { num, tag } or null
 function parseInvAInfo_(name) {
   const m = /\bINV-(\d+)-(\d{4})\b/i.exec(String(name || ''));
   return m ? { num: parseInt(m[1], 10), tag: m[2] } : null;
 }
-// Parse “IPEC Invoice XXX-YYYY” anywhere in the name
 function parseInvBInfo_(name) {
   const m = /IPEC\s*Invoice[^\d]*?(\d+)\s*-\s*(\d{4})/i.exec(String(name || ''));
   return m ? { num: parseInt(m[1], 10), tag: m[2] } : null;
 }
 
-// Latest {num, tag} by filenames in a folder
-function getFolderMaxInfo_(folderId, parseInfoFn) {
-  let best = { num: 0, tag: '' };
-  const it = DriveApp.getFolderById(folderId).getFiles();
-  while (it.hasNext()) {
-    const f = it.next();
-    const mt = f.getMimeType();
-    const isExcel = (CFG.EXCEL_MIMES && CFG.EXCEL_MIMES.indexOf(mt) !== -1) || /\.xlsx?$/i.test(f.getName());
-    if (!isExcel) continue;
-    const info = parseInfoFn(f.getName());
-    if (info && (info.tag > best.tag || (info.tag === best.tag && info.num > best.num))) best = info;
-  }
-  return best;
-}
-
-// Owner-agnostic listing across all drives for a given tag (YYYY)
-function listFolderFilesForTag_(folderId, parseInfoFn, tag) {
-  const items = listExcelFilesAllDrives_(folderId);
-  const out = [];
-  for (const it of items) {
-    const info = parseInfoFn(it.name); // {num, tag}
-    if (info && info.tag === tag) out.push({ file: DriveApp.getFileById(it.id), num: info.num, tag: info.tag });
-  }
-  Logger.log(`Folder ${folderId} tag ${tag}: found ${out.length} Excel file(s) across all drives.`);
-  return out;
-}
-
-// All-Drives listing (Advanced Drive API v3)
 function listExcelFilesAllDrives_(folderId) {
   const q = `'${folderId}' in parents and trashed=false and (` +
             `mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or ` +
@@ -613,12 +659,35 @@ function listExcelFilesAllDrives_(folderId) {
   return items;
 }
 
+function getFolderMaxInfo_(folderId, parseInfoFn) {
+  let best = { num: 0, tag: '' };
+  const it = DriveApp.getFolderById(folderId).getFiles();
+  while (it.hasNext()) {
+    const f = it.next();
+    const mt = f.getMimeType();
+    const isExcel = (CFG.EXCEL_MIMES && CFG.EXCEL_MIMES.indexOf(mt) !== -1) || /\.xlsx?$/i.test(f.getName());
+    if (!isExcel) continue;
+    const info = parseInfoFn(f.getName());
+    if (info && (info.tag > best.tag || (info.tag === best.tag && info.num > best.num))) best = info;
+  }
+  return best;
+}
+
+function listFolderFilesForTag_(folderId, parseInfoFn, tag) {
+  const items = listExcelFilesAllDrives_(folderId);
+  const out = [];
+  for (const it of items) {
+    const info = parseInfoFn(it.name);
+    if (info && info.tag === tag) out.push({ file: DriveApp.getFileById(it.id), num: info.num, tag: info.tag });
+  }
+  Logger.log(`Folder ${folderId} tag ${tag}: found ${out.length} Excel file(s) across all drives.`);
+  return out;
+}
+
 /* ================================ Presence / Enrichment ================================ */
 
-// Normalize names: lowercase, trim, strip .xls/.xlsx
 function normalizeName_(s) { return String(s || '').toLowerCase().trim().replace(/\.(xlsx|xls)$/i, ''); }
 
-// Master presence for Type+tag → exact names, urls, and normalized names
 function listMasterPresenceForTypeTag_(sh, typeLetter, tag) {
   const out = { names: new Set(), urls: new Set(), normNames: new Set() };
   if (!tag) return out;
@@ -634,7 +703,7 @@ function listMasterPresenceForTypeTag_(sh, typeLetter, tag) {
     const type = toStr(vals[i][2]).trim().toUpperCase();
     if (type !== typeLetter || !name) continue;
 
-    const info = parseInfo(name); // { num, tag }
+    const info = parseInfo(name);
     if (info && info.tag === tag) {
       out.names.add(name);
       out.normNames.add(normalizeName_(name));
@@ -644,7 +713,6 @@ function listMasterPresenceForTypeTag_(sh, typeLetter, tag) {
   return out;
 }
 
-// Build a map: ITEMCODE -> { supplier, category, subcategory } from the Items tab
 function loadItemsMap_(ssMaster) {
   const sh = ssMaster.getSheetByName(CFG.ITEMS_TAB);
   if (!sh) return new Map();
@@ -669,7 +737,6 @@ function loadItemsMap_(ssMaster) {
 
 /* ================================ Import utils ================================ */
 
-// Excel (.xls/.xlsx) → temporary Google Sheet (Drive Advanced Service v3)
 function importExcelToSheet_v3_(file) {
   const blob = file.getBlob();
   const meta = { name: stripExt_(file.getName()) + ' (Imported)', mimeType: 'application/vnd.google-apps.spreadsheet' };
@@ -678,13 +745,70 @@ function importExcelToSheet_v3_(file) {
   return { spreadsheet: SpreadsheetApp.openById(res.id), toDelete: res.id };
 }
 
-// Prefer common invoice tabs; fallback to first visible
 function pickDataSheet_(ss) {
   for (const nm of CFG.DATA_SHEET_CANDIDATES) {
     const sh = ss.getSheetByName(nm); if (sh) return sh;
   }
   const vis = ss.getSheets().filter(s => !s.isSheetHidden());
   return vis.length ? vis[0] : ss.getSheets()[0];
+}
+
+/* ======================== Readability & Cleanup helpers ======================== */
+
+function ensureSheetReadable_(sh) {
+  try {
+    if (sh.isSheetHidden && sh.isSheetHidden()) sh.showSheet();
+    try { const filter = sh.getFilter && sh.getFilter(); if (filter) filter.remove(); } catch (_) {}
+    try { sh.showRows(1, sh.getMaxRows()); } catch (_) {}
+    try { sh.showColumns(1, sh.getMaxColumns()); } catch (_) {}
+  } catch (e) {
+    Logger.log('ensureSheetReadable_ (soft) failed: ' + e);
+  }
+  return sh;
+}
+
+function cleanMasterVisuals_(sh) {
+  try {
+    try { const filter = sh.getFilter && sh.getFilter(); if (filter) filter.remove(); } catch (_) {}
+    try { sh.showRows(1, sh.getMaxRows()); } catch (_) {}
+    try { sh.showColumns(1, sh.getMaxColumns()); } catch (_) {}
+  } catch (e) {
+    Logger.log('cleanMasterVisuals_ (soft) failed: ' + e);
+  }
+}
+
+function purgeOldTempImports_(daysOld) {
+  const cutoff = Date.now() - daysOld*24*60*60*1000;
+  try {
+    const res = Drive.Files.list({
+      q: "mimeType='application/vnd.google-apps.spreadsheet' and name contains ' (Imported)' and trashed=false",
+      corpora: 'allDrives', includeItemsFromAllDrives: true, supportsAllDrives: true,
+      fields: 'files(id,name,createdTime),nextPageToken', pageSize: 1000
+    });
+    (res.files||[]).forEach(f => {
+      if (new Date(f.createdTime).getTime() < cutoff) {
+        try { Drive.Files.delete(f.id, { supportsAllDrives:true }); } catch(_) {}
+      }
+    });
+  } catch (e) { Logger.log('purgeOldTempImports_ failed: ' + e); }
+}
+
+function logStep_(phase, detail, extra) {
+  Logger.log(`[${phase}] ${detail}${extra ? ' | ' + JSON.stringify(extra) : ''}`);
+}
+
+/* ==================== Tags collection across folders ==================== */
+function collectAllTags_(folderAId, folderBId, parseA, parseB) {
+  const seen = new Set();
+  const addFrom = (folderId, parseFn) => {
+    listExcelFilesAllDrives_(folderId).forEach(it => {
+      const info = parseFn(it.name);
+      if (info && info.tag) seen.add(String(info.tag));
+    });
+  };
+  addFrom(folderAId, parseA);
+  addFrom(folderBId, parseB);
+  return Array.from(seen).sort(); // MMYY lexicographically ok
 }
 
 /* ================================ Retry wrappers / utils ================================ */
@@ -725,139 +849,139 @@ const EXPECTED_MASTER_HEADERS = [
 ];
 const _norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 
-function resolveMasterGid_(sheetId, preferredTabName) {
-  const ss = SpreadsheetApp.openById(sheetId);
-  if (preferredTabName) {
-    const sh = ss.getSheetByName(preferredTabName);
-    if (sh) return { gid: String(sh.getSheetId()), name: sh.getName(), score: 999 };
+/* ===== Exact-line de-dup (keeps all items; removes only true duplicates) ===== */
+function Master_DeduplicateByInvoiceItemExact() {
+  const ss = openSpreadsheetWithRetry_(CFG.MASTER_SHEET_ID);
+  const sh = ss.getSheetByName(CFG.MASTER_TAB);
+  const last = sh.getLastRow();
+  if (last < 2) return;
+
+  const nCols = CFG.OUT_HEAD.length; // A..O
+  const vals  = readRangeValuesWithRetry_(sh.getRange(2, 1, last - 1, nCols));
+
+  // A InvoiceName, F ItemCode, H Qty, I UnitPrice, J LineTotal
+  const A=0, F=5, H=7, I=8, J=9;
+
+  const seen = new Set();
+  const out  = [];
+
+  for (let i = 0; i < vals.length; i++) {
+    const r = vals[i];
+    const inv  = String(r[A] || '').trim();
+    const code = String(r[F] || '').trim().toUpperCase();
+    const qty  = Number(r[H] || 0);
+    const unit = Number(r[I] || 0);
+    const line = Number(r[J] || 0);
+
+    const key = [inv, code, qty, unit.toFixed(4), line.toFixed(4)].join('||');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
   }
-  const wanted = new Set(EXPECTED_MASTER_HEADERS.map(_norm));
-  let best = { gid: '0', name: '', score: -1 };
-  ss.getSheets().forEach(sh => {
-    const n = Math.min(sh.getLastColumn(), 50);
-    if (n < 2) return;
-    const headers = sh.getRange(1,1,1,n).getValues()[0];
-    const score = headers.reduce((s,h)=> s + (wanted.has(_norm(h)) ? 1 : 0), 0);
-    if (score > best.score) best = { gid: String(sh.getSheetId()), name: sh.getName(), score };
+
+  sh.getRange(2, 1, last - 1, nCols).clearContent();
+  if (out.length) {
+    sh.getRange(2, 1, out.length, nCols).setValues(out);
+    sh.getRange(2, 15, out.length, 1).setNumberFormat('dd/MM/yyyy'); // O = InvoiceDate
+  }
+}
+
+/****************** Triggers: Mon–Fri 17:00, Sat 14:00 ******************/
+function CreateWeeklyTriggers_BuilderAndItems() {
+  const fns = new Set([
+    'BuildMasterIncremental_Gated',
+    'UpdateItemsFromSyntheseIncremental_Gated',
+    'BuildMasterIncremental',
+    'UpdateItemsFromSyntheseIncremental'
+  ]);
+
+  // Clear existing related triggers
+  ScriptApp.getProjectTriggers().forEach(t => {
+    const fn = t.getHandlerFunction && t.getHandlerFunction();
+    if (fn && fns.has(fn)) { try { ScriptApp.deleteTrigger(t); } catch (_) {} }
   });
-  return best;
-}
-function _authProbe_() {
-  const url = 'https://www.googleapis.com/oauth2/v3/tokeninfo';
-  const resp = UrlFetchApp.fetch(url, {
-    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true
+
+  // Mon–Fri @ 17:00
+  const weekdays = [
+    ScriptApp.WeekDay.MONDAY,
+    ScriptApp.WeekDay.TUESDAY,
+    ScriptApp.WeekDay.WEDNESDAY,
+    ScriptApp.WeekDay.THURSDAY,
+    ScriptApp.WeekDay.FRIDAY
+  ];
+  weekdays.forEach(dow => {
+    ScriptApp.newTrigger('BuildMasterIncremental_Gated')
+      .timeBased().onWeekDay(dow).atHour(17).nearMinute(0).create();
+    ScriptApp.newTrigger('UpdateItemsFromSyntheseIncremental_Gated')
+      .timeBased().onWeekDay(dow).atHour(17).nearMinute(0).create();
   });
-  Logger.log(resp.getResponseCode());
-}
-function _sheetAuthProbe_() {
-  SpreadsheetApp.openById(CFG.MASTER_SHEET_ID).getName();
-}
-// =================== Backfill Product Descriptions (ALL ROWS) ===================
 
-const PROP_BACKFILL_IDX = 'BACKFILL_ROW_IDX';
+  // Saturday @ 14:00
+  ScriptApp.newTrigger('BuildMasterIncremental_Gated')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.SATURDAY).atHour(14).nearMinute(0).create();
+  ScriptApp.newTrigger('UpdateItemsFromSyntheseIncremental_Gated')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.SATURDAY).atHour(14).nearMinute(0).create();
 
-function BackfillDescriptionsFromInvoices_All_Gated() {
-  if (!withinWindow_()) { Logger.log('Outside window; skipping Backfill'); return; }
-  BackfillDescriptionsFromInvoices_All();
+  Logger.log('Created weekly triggers: Mon–Fri 17:00, Sat 14:00 (script timezone).');
 }
 
-function BackfillDescriptionsFromInvoices_All() {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30 * 1000)) { Logger.log('Backfill lock busy; skipping.'); return; }
+/* ===================== Date normalization helpers (optional) ===================== */
 
-  try {
-    const props = PropertiesService.getDocumentProperties();
-    const ss = openSpreadsheetWithRetry_(CFG.MASTER_SHEET_ID);
-    const sh = ss.getSheetByName(CFG.MASTER_TAB);
-    if (!sh) { Logger.log('Master sheet not found'); return; }
-
-    const lastRow = sh.getLastRow();
-    if (lastRow < 2) { Logger.log('No data rows'); return; }
-
-    // Start from saved progress (2 = first data row)
-    let i = parseInt(props.getProperty(PROP_BACKFILL_IDX) || '2', 10);
-    if (isNaN(i) || i < 2) i = 2;
-
-    const t0 = Date.now();
-    const tLimit = CFG.TIME_GUARD_MS || 5 * 60 * 1000;
-
-    while (i <= lastRow) {
-      if (Date.now() - t0 > tLimit) {
-        props.setProperty(PROP_BACKFILL_IDX, String(i));
-        scheduleAutoContinueBackfill_();
-        Logger.log('Time guard hit; paused at row ' + i);
-        return;
-      }
-
-      const row = sh.getRange(i, 1, 1, CFG.OUT_HEAD.length).getValues()[0]; // A..O
-      const type  = toStr(row[2]).trim().toUpperCase(); // C: Type (A/B)
-      const path  = toStr(row[1]);                      // B: InvoicePath (expect Drive URL)
-      const code  = toStr(row[5]).trim().toUpperCase(); // F: ItemCode
-      const cur   = toStr(row[6]).trim();               // G: ProductDescription (current)
-
-      // Always re-check (even if cur is non-empty)
-      const fresh = tryReadDescFromInvoice_(path, type, code);
-      if (fresh && fresh !== cur) {
-        sh.getRange(i, 7).setValue(fresh); // column G
-      }
-
-      i++;
-    }
-
-    props.deleteProperty(PROP_BACKFILL_IDX);
-    Logger.log('Backfill complete.');
-
-  } finally {
-    lock.releaseLock();
+function excelSerialToDate_(n) {
+  return new Date(Math.round((Number(n) - 25569) * 86400 * 1000));
+}
+function parseDateFlexible_(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (Object.prototype.toString.call(raw) === '[object Date]' && !isNaN(raw.getTime())) return raw;
+  if (typeof raw === 'number' || (/^\d+(\.\d+)?$/.test(String(raw).trim()))) {
+    try { const d = excelSerialToDate_(Number(raw)); if (!isNaN(d.getTime())) return d; } catch (_) {}
   }
-}
-
-// Extract description from the invoice file at the given URL for the given code
-function tryReadDescFromInvoice_(invoiceUrl, type, itemCode) {
-  try {
-    const m = /[-\w]{25,}/.exec(String(invoiceUrl || '')); // Drive file id in URL
-    if (!m) return '';
-    const file = DriveApp.getFileById(m[0]);
-
-    const openRes = importExcelToSheet_v3_(file);
-    try {
-      const dataSh = pickDataSheet_(openRes.spreadsheet);
-      if (!dataSh) return '';
-      const values = readRangeValuesWithRetry_(dataSh.getDataRange());
-
-      // Use your readers (both force description from column B already)
-      const rows = (String(type).toUpperCase() === 'A') ? readItemsA_(values) : readItemsB_(values);
-      const hit  = rows.find(r => toStr(r.itemCode).trim().toUpperCase() === itemCode);
-      return hit ? toStr(hit.description).trim() : '';
-    } finally {
-      if (CFG.CLEANUP_TEMP_IMPORTS && openRes.toDelete) {
-        try { Drive.Files.delete(openRes.toDelete, { supportsAllDrives:true }); } catch(_) {}
-      }
-    }
-  } catch (e) {
-    Logger.log('Backfill read failed: ' + e);
-    return '';
+  const s = String(raw).trim(); if (!s) return null;
+  const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (dmy) {
+    const dd = Number(dmy[1]), mm = Number(dmy[2]), yyyy = Number(dmy[3] < 100 ? (2000 + Number(dmy[3])) : dmy[3]);
+    const d = new Date(yyyy, mm - 1, dd); return isNaN(d.getTime()) ? null : d;
   }
+  const d2 = new Date(s); return isNaN(d2.getTime()) ? null : d2;
 }
-
-function scheduleAutoContinueBackfill_() {
-  try {
-    ScriptApp.getProjectTriggers()
-      .filter(t => t.getHandlerFunction && t.getHandlerFunction() === 'BackfillDescriptionsFromInvoices_All_Gated' &&
-                   t.getEventType && t.getEventType() === ScriptApp.EventType.CLOCK)
-      .forEach(t => { try { ScriptApp.deleteTrigger(t); } catch (_) {} });
-
-    const when = nextAllowedTime_();
-    ScriptApp.newTrigger('BackfillDescriptionsFromInvoices_All_Gated').timeBased().at(when).create();
-    Logger.log('Backfill auto-continue scheduled: ' + when);
-  } catch (err) {
-    Logger.log('Backfill auto-continue skipped: ' + err);
+function _midnightLocal_(d, tz) {
+  const yyyy = Utilities.formatDate(d, tz, 'yyyy');
+  const mm   = Utilities.formatDate(d, tz, 'MM');
+  const dd   = Utilities.formatDate(d, tz, 'dd');
+  return new Date(Number(yyyy), Number(mm) - 1, Number(dd), 0, 0, 0, 0);
+}
+function _parseToDateOnly_(raw, tz) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (Object.prototype.toString.call(raw) === '[object Date]' && !isNaN(raw.getTime())) return _midnightLocal_(raw, tz);
+  const s = String(raw).trim();
+  const isNum = /^-?\d+(\.\d+)?$/.test(s);
+  if (typeof raw === 'number' || isNum) {
+    const n = Number(raw); const d = new Date(Math.round((n - 25569) * 86400 * 1000));
+    if (!isNaN(d.getTime())) return _midnightLocal_(d, tz);
   }
+  const m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (m) { const dd = Number(m[1]), mm = Number(m[2]), yyyy = Number(m[3] < 100 ? (2000 + Number(m[3])) : m[3]); const d = new Date(yyyy, mm - 1, dd); return isNaN(d.getTime()) ? null : _midnightLocal_(d, tz); }
+  const d2 = new Date(s); if (!isNaN(d2.getTime())) return _midnightLocal_(d2, tz);
+  return null;
 }
 
-// Utility: start over from the very beginning
-function BackfillDescriptions_ResetAndRun() {
-  PropertiesService.getDocumentProperties().deleteProperty(PROP_BACKFILL_IDX);
-  BackfillDescriptionsFromInvoices_All_Gated();
+function NormalizeInvoiceDatesInMaster_() {
+  const ss = SpreadsheetApp.openById(CFG.MASTER_SHEET_ID);
+  const sh = ss.getSheetByName(CFG.MASTER_TAB);
+  if (!sh) { Logger.log('Master tab not found'); return; }
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) { Logger.log('No data to normalize'); return; }
+
+  const vals = sh.getRange(2, 15, lastRow - 1, 1).getValues(); // col O
+  let changed = 0;
+  const tz = Session.getScriptTimeZone();
+
+  for (let i = 0; i < vals.length; i++) {
+    const cur = vals[i][0];
+    const d = _parseToDateOnly_(cur, tz);
+    if (d) { vals[i][0] = d; changed++; }
+  }
+
+  sh.getRange(2, 15, vals.length, 1).setValues(vals).setNumberFormat('dd/MM/yyyy');
+  Logger.log(`InvoiceDate normalized: ${changed} row(s) updated.`);
 }

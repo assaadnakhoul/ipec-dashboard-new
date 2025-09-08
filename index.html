@@ -117,6 +117,28 @@
       .thumb{width:60px;height:60px}
     }
   </style>
+   <!-- Big popup modal CSS -->
+  <style>
+    /* Fullscreen overlay */
+    .inv-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999}
+    /* Big popup */
+    .inv-modal{background:#fff;width:min(1100px,92vw);max-height:90vh;border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.25);display:flex;flex-direction:column}
+    .inv-modal-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #eee}
+    .inv-modal-body{display:grid;grid-template-columns:1fr 2fr;gap:12px;padding:12px 16px;overflow:hidden}
+    .inv-list{overflow:auto;border-right:1px solid #f0f0f0;padding-right:8px}
+    .inv-items{overflow:auto}
+    .inv-row{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:10px;cursor:pointer}
+    .inv-row:hover{background:#f7f9fc}
+    .inv-row.active{background:#eef3ff}
+    .inv-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px dashed #eee}
+    .inv-item:last-child{border-bottom:none}
+    .inv-item .grow{flex:1 1 auto}
+    .inv-item .desc-line{display:block;margin-top:2px;font-size:12px;opacity:.8}
+    .inv-item .price-line{display:block;margin-top:4px;font-size:12px}
+    .chip{display:inline-block;padding:2px 6px;border-radius:999px;background:#f1f3f5;font-size:12px}
+    .close-x{font-size:22px;line-height:1;border:none;background:transparent;cursor:pointer}
+  </style>
+</head>
 </head>
 <body>
   <div class="wrap">
@@ -131,6 +153,10 @@
   <button id="refresh-btn" class="badge" style="cursor:pointer;background:#2a72ff;color:white;">
     Refresh
   </button>
+  <button id="invoices-btn" class="badge" style="cursor:pointer;">
+  Invoices
+</button>
+
 </div>
 
     </header>
