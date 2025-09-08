@@ -239,10 +239,10 @@ function aggregate(all){
   for(const [ph,set] of seenA.entries()){ const name=ph2cA.get(ph)||ph; cntA[name]=(cntA[name]||0)+set.size; }
   for(const [ph,set] of seenB.entries()){ const name=ph2cB.get(ph)||ph; cntB[name]=(cntB[name]||0)+set.size; }
 
-  const topA_value = Object.entries(valA).sort((x,y)=>y[1]-x[1]).slice(0,20);
-  const topB_value = Object.entries(valB).sort((x,y)=>y[1]-x[1]).slice(0,20);
-  const topA_count = Object.entries(cntA).sort((x,y)=>y[1]-x[1]).slice(0,20);
-  const topB_count = Object.entries(cntB).sort((x,y)=>y[1]-x[1]).slice(0,20);
+const topA_value = Object.entries(valA).sort((x,y)=>y[1]-x[1]);
+const topB_value = Object.entries(valB).sort((x,y)=>y[1]-x[1]);
+const topA_count = Object.entries(cntA).sort((x,y)=>y[1]-x[1]);
+const topB_count = Object.entries(cntB).sort((x,y)=>y[1]-x[1]);
 
   // Top suppliers (value + invoice-count)
   const supVal = {}, supCnt = {};
@@ -254,8 +254,8 @@ function aggregate(all){
     supSeen.get(r.supplier).add(r.invoice);
   });
   for(const [sup,set] of supSeen.entries()){ supCnt[sup] = (supCnt[sup]||0) + set.size; }
-  const topSup_value = Object.entries(supVal).sort((x,y)=>y[1]-x[1]).slice(0,20);
-  const topSup_count = Object.entries(supCnt).sort((x,y)=>y[1]-x[1]).slice(0,20);
+const topSup_value = Object.entries(supVal).sort((x,y)=>y[1]-x[1]);
+const topSup_count = Object.entries(supCnt).sort((x,y)=>y[1]-x[1]);
 
   // Best sellers (group by robust key; never empty due to fallback)
   const byVal={}, byQty={}, meta={};
@@ -308,38 +308,60 @@ function setPillset(el, mode){
   if(!el) return;
   el.querySelectorAll(".pill")?.forEach?.(b => b.setAttribute("aria-pressed", b.dataset.mode===mode ? "true":"false"));
 }
-function renderTopClients(el, list, mode){
-  if(!el) return;
-  el.innerHTML="";
-  (list||[]).forEach(([name,amt],i)=>{
-    const li=document.createElement("li");
-    li.className="li";
-    li.innerHTML=`<div class="grow"><div class="name">${i+1}. ${esc(name||"Unknown")}</div></div>
-      <div class="value">${mode==="value" ? fmtMoney(amt) : fmtInt(amt)}</div>`;
+function renderTopClients(el, list, mode) {
+  if (!el) return;
 
-    // Only for clients lists (A or B), not suppliers:
-    const listId = el.id || "";
-    const t = (listId === "list-topA") ? "A" : (listId === "list-topB") ? "B" : null;
-    if (t) {
-      const btn = document.createElement("button");
-      btn.className = "badge";
-      btn.textContent = "Details";
-      btn.style.marginLeft = "8px";
-      btn.addEventListener("click", (ev)=>{
-        ev.stopPropagation();
-        const clientName = name || "";
-        const data = (window.__currentFiltered || []).filter(r =>
-          r.type === t && (r.client === clientName || r.phone === clientName)
-        );
-        const { invoiceList, itemsByInvoice } = buildInvoiceViews(data);
-        showInvoiceDetailsModal(invoiceList, itemsByInvoice);
-      });
-      li.appendChild(btn);
+  // identify which list we’re rendering
+  const listId =
+    (el.id === "list-topA")  ? "topA" :
+    (el.id === "list-topB")  ? "topB" :
+    (el.id === "list-topSup")? "suppliers" : "topA";
+
+  // one-time delegated listener (ignored for suppliers)
+  if (!el.__detailsDelegated) {
+    el.addEventListener("click", (ev) => {
+      const btn = ev.target.closest(".details-btn");
+      if (!btn || !el.contains(btn)) return;
+      if (listId === "suppliers") return;          // ← no actions for suppliers
+
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      const clientName = btn.getAttribute("data-client") || "";
+      const t          = btn.getAttribute("data-type"); // "A" or "B"
+
+      const data = (window.__currentFiltered || []).filter(r =>
+        r.type === t && (r.client === clientName || r.phone === clientName)
+      );
+      const { invoiceList, itemsByInvoice } = buildInvoiceViews(data);
+      showInvoiceDetailsModal(invoiceList, itemsByInvoice);
+    });
+    el.__detailsDelegated = true;
+  }
+
+  // render current page (uses your pager helper)
+  renderListWithPager({
+    el, list, mode, listId,
+    makeRowHTML: ({ index, name, amt, mode }) => {
+      const rank = index + 1;
+      const valueHTML = (mode === "value") ? fmtMoney(amt) : fmtInt(amt);
+
+      // Only clients A/B get a Details button
+      const t = (listId === "topA") ? "A" : (listId === "topB") ? "B" : null;
+      const detailsBtn = t
+        ? `<button class="badge details-btn" data-client="${esc(name || "")}" data-type="${t}" style="margin-left:8px">Details</button>`
+        : ""; // suppliers => no button
+
+      return `
+        <div class="grow"><div class="name">${rank}. ${esc(name || "Unknown")}</div></div>
+        <div class="value">${valueHTML}</div>
+        ${detailsBtn}`;
     }
-
-    el.appendChild(li);
   });
 }
+
+
+
 
 function renderBestItems(el, list, mode){
   if (!el) return;
@@ -775,6 +797,64 @@ function showInvoiceDetailsModal(invoiceList, itemsByInvoice) {
       right.innerHTML = selected ? renderItemsFor(selected) : "";
     });
   });
+}
+// ===== Pagination & sorting (shared) =====
+const PER_PAGE = 10;
+const pagerState = {
+  topA:      { page: 1, order: "desc" },   // clients OUT (A)
+  topB:      { page: 1, order: "desc" },   // clients IN  (B)
+  suppliers: { page: 1, order: "desc" }
+};
+
+function renderListWithPager({ el, list, mode, listId, makeRowHTML }) {
+  if (!el) return;
+  const st = pagerState[listId] || (pagerState[listId] = { page: 1, order: "desc" });
+
+  // sort by metric (value or count) then apply order
+  const arr = (list || []).slice().sort((a, b) => {
+    const av = Number(a[1] || 0), bv = Number(b[1] || 0);
+    return st.order === "desc" ? (bv - av) : (av - bv);
+  });
+
+  const pages = Math.max(1, Math.ceil(arr.length / PER_PAGE));
+  if (st.page > pages) st.page = pages;
+  if (st.page < 1)     st.page = 1;
+
+  const start = (st.page - 1) * PER_PAGE;
+  const subset = arr.slice(start, start + PER_PAGE);
+
+  // list
+  el.innerHTML = "";
+  subset.forEach(([name, amt], i) => {
+    const li = document.createElement("li");
+    li.className = "li";
+    li.innerHTML = makeRowHTML({ index: start + i, name, amt, mode });
+    el.appendChild(li);
+  });
+
+  // footer pager
+  let nav = el.nextElementSibling;
+  if (!nav || !nav.classList.contains("pager")) {
+    nav = document.createElement("div");
+    nav.className = "pager";
+    el.after(nav);
+  }
+  nav.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 4px;">
+      <div>
+        <button class="badge" data-act="prev">‹ Prev</button>
+        <button class="badge" data-act="next">Next ›</button>
+      </div>
+      <div class="muted tiny">Page <strong>${st.page}</strong> / ${pages} — ${arr.length} items</div>
+      <div>
+        <button class="badge" data-act="order">${st.order === "desc" ? "Descending" : "Ascending"}</button>
+      </div>
+    </div>`;
+
+  // events
+  nav.querySelector('[data-act="prev"]').onclick = () => { if (st.page > 1) { st.page--; renderListWithPager({ el, list, mode, listId, makeRowHTML }); } };
+  nav.querySelector('[data-act="next"]').onclick = () => { if (st.page < pages) { st.page++; renderListWithPager({ el, list, mode, listId, makeRowHTML }); } };
+  nav.querySelector('[data-act="order"]').onclick = () => { st.order = (st.order === "desc" ? "asc" : "desc"); st.page = 1; renderListWithPager({ el, list, mode, listId, makeRowHTML }); };
 }
 
 
