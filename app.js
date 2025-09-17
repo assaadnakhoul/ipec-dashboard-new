@@ -295,10 +295,10 @@ const topSup_count = Object.entries(supCnt).sort((x,y)=>y[1]-x[1]);
 
 /* ---------------- renderers --------------------- */
 function renderKPIs(a, grand){
-  document.getElementById("kpi-turnover") && (document.getElementById("kpi-turnover").textContent=fmtMoney(a.turnover));
+  document.getElementById("kpi-turnover") && (document.getElementById("kpi-turnover").textContent=fmtUSD(a.turnover));
   document.getElementById("kpi-invoices") && (document.getElementById("kpi-invoices").textContent=fmtInt(a.invoices));
   document.getElementById("kpi-qty") && (document.getElementById("kpi-qty").textContent=fmtInt(a.totalQty));
-  document.getElementById("kpi-avg") && (document.getElementById("kpi-avg").textContent=fmtMoney(a.avg));
+  document.getElementById("kpi-avg") && (document.getElementById("kpi-avg").textContent=fmtUSD(a.avg));
 
   const pct = grand && grand.turnover>0 ? (a.turnover / grand.turnover) * 100 : 0;
   const el = document.getElementById("kpi-turnover-percent");
@@ -344,7 +344,8 @@ function renderTopClients(el, list, mode) {
     el, list, mode, listId,
     makeRowHTML: ({ index, name, amt, mode }) => {
       const rank = index + 1;
-      const valueHTML = (mode === "value") ? fmtMoney(amt) : fmtInt(amt);
+      const valueHTML = (mode === "value") ? fmtUSD(amt) : fmtInt(amt);
+
 
       // Only clients A/B get a Details button
       const t = (listId === "topA") ? "A" : (listId === "topB") ? "B" : null;
@@ -385,7 +386,7 @@ function renderBestItems(el, list, mode){
         <div class="name">${i + 1}. ${esc(it.code)}</div>
         <div class="muted">${esc(it.desc || "")}</div>
       </div>
-      <div class="value">${mode === "value" ? fmtMoney(it.val) : fmtInt(it.qty)}</div>`;
+      <div class="value">${mode === "value" ? fmtUSD(it.val) : fmtInt(it.qty)}</div>`;
     el.appendChild(li);
   });
 
@@ -416,7 +417,7 @@ function renderBestItems(el, list, mode){
           <div class="name">${(idx + 6)}. ${esc(it.code)}</div>
           <div class="muted">${esc(it.desc || "")}</div>
         </div>
-        <div class="value">${mode === "value" ? fmtMoney(it.val) : fmtInt(it.qty)}</div>`;
+        <div class="value">${mode === "value" ? fmtUSD(it.val) : fmtInt(it.qty)}</div>`;
       subList.appendChild(li);
     });
 
@@ -454,8 +455,9 @@ function renderMonthTable(rows){
       <td>${esc(ymLabel(r.ym))}</td>
       <td>${fmtInt(r.invoices)}</td>
       <td>${fmtInt(r.qty)}</td>
-      <td>${fmtMoney(r.turnover)}</td>
-      <td>${fmtMoney(r.avg)}</td>
+      <td>${fmtUSD(r.turnover)}</td>
+      <td>${fmtUSD(r.avg)}</td>
+
     `;
     tbody.appendChild(tr);
   });
@@ -551,24 +553,36 @@ function wireCollapsibles(){
 function buildInvoiceViews(rows){
   const invTotals = new Map();
   const itemsByInvoice = new Map();
+  const invDates = new Map(); // <<< add a date map
+
   for (const r of rows || []) {
     const inv = r.invoiceName || r.invoiceFile || r.invoice || "";
     if (!inv) continue;
     const line = Number(r.line || ((r.qty||0) * (r.unit||0)) || 0);
     invTotals.set(inv, (invTotals.get(inv) || 0) + line);
 
+    // capture date once per invoice (normalize() already provides r.invDate)
+    if (r.invDate && !invDates.has(inv)) invDates.set(inv, r.invDate);
+
     if (!itemsByInvoice.has(inv)) itemsByInvoice.set(inv, []);
     itemsByInvoice.get(inv).push({
       code: String(r.code || "").trim(),
       qty: Number(r.qty || 0),
-      unitPrice: Number(r.unit || 0),     // ← from col I (UnitPrice)
-      desc: r.desc || ""                  // ← from col G (Product/Description)
+      unitPrice: Number(r.unit || 0),
+      desc: r.desc || ""
     });
   }
-  const invoiceList = Array.from(invTotals, ([invoice, total]) => ({ invoice, total }))
-    .sort((a,b)=> String(a.invoice).localeCompare(String(b.invoice), undefined, {numeric:true, sensitivity:"base"}));
+
+  const invoiceList = Array.from(invTotals, ([invoice, total]) => ({
+    invoice,
+    total,
+    date: invDates.get(invoice) || null  // <<< attach date
+  }))
+  .sort((a,b)=> String(a.invoice).localeCompare(String(b.invoice), undefined, {numeric:true, sensitivity:"base"}));
+
   return { invoiceList, itemsByInvoice };
 }
+
 
 /* -------------------- main ---------------------- */
 async function main(){
@@ -772,10 +786,14 @@ function showInvoiceDetailsModal(invoiceList, itemsByInvoice) {
   overlay.className = "inv-modal-overlay";
   overlay.innerHTML = `
     <section class="inv-modal" role="dialog" aria-modal="true" aria-label="Invoice details">
-      <div class="inv-modal-header">
-        <div><strong>Invoice Details</strong></div>
-        <button class="close-x" aria-label="Close">&times;</button>
-      </div>
+<div class="inv-modal-header">
+  <div>
+    <strong>Invoice Details</strong>
+    — <span class="inv-header-current"></span>
+  </div>
+  <button class="close-x" aria-label="Close">&times;</button>
+</div>
+
       <div class="inv-modal-body">
         <div class="inv-list">
           ${invoiceList.map(row => {
@@ -800,6 +818,17 @@ function showInvoiceDetailsModal(invoiceList, itemsByInvoice) {
   document.documentElement.style.overflow = "hidden";
 
   document.body.appendChild(overlay);
+function updateHeader(){
+  const found = (invoiceList || []).find(r => r.invoice === selected);
+  // normalize to Date for fmtDate()
+  const d = found?.date;
+  const dateObj = (d instanceof Date) ? d : (typeof parseDateAny === "function" ? parseDateAny(d) : null);
+  const dateStr = dateObj ? fmtDate(dateObj) : "—";
+
+  const span = overlay.querySelector(".inv-header-current");
+  if (span) span.textContent = `${selected || ""} (${dateStr})`;
+}
+updateHeader();
 
   // ----- wiring --------------------------------------------------------------
   const closeBtn = overlay.querySelector(".close-x");
@@ -824,6 +853,7 @@ function showInvoiceDetailsModal(invoiceList, itemsByInvoice) {
       selected = rowEl.getAttribute("data-inv") || null;
       const right = overlay.querySelector(".inv-items");
       right.innerHTML = selected ? renderItemsFor(selected) : "";
+      updateHeader();
     });
   });
 }
