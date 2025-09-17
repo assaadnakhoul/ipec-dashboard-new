@@ -621,6 +621,32 @@ renderMonthTable(agg.monthRows);
       renderMonthTable(agg.monthRows);
       
     }
+
+    /* -------------------- refresh wiring ---------------------- */
+function wireRefreshButton(){
+  const btn =
+    document.getElementById('btn-refresh') ||
+    document.querySelector('[data-action="refresh"]') ||
+    document.getElementById('refresh');
+
+  if (!btn || btn._wired) return;
+  btn._wired = true;
+
+  btn.addEventListener('click', async () => {
+    try {
+      const first = (window.JSON_URLS && window.JSON_URLS[0]) || '';
+      if (first) {
+        const url = first + (first.includes('?') ? '&' : '?') + 'refresh=1&t=' + Date.now();
+        log('Triggering server rebuild via', url);   // uses your existing log()
+        await fetch(url, { method: 'GET', mode: 'cors', cache: 'no-store' });
+      }
+    } catch (e) {
+      log('Refresh trigger failed:', e);
+    }
+    location.reload();
+  });
+}
+
 // Make headers clickable for sorting
 document.querySelectorAll("#month-table thead th").forEach((th, idx)=>{
   th.style.cursor = "pointer";
@@ -665,6 +691,7 @@ document.querySelectorAll("#month-table thead th").forEach((th, idx)=>{
     document.getElementById("itemsMode")?.addEventListener("click", e=>{
       const b=e.target.closest(".pill"); if(!b) return; state.items=b.dataset.mode; recomputeAndRender();
     });
+if (typeof wireRefreshButton === 'function') wireRefreshButton();
 
     wireCollapsibles();
     recomputeAndRender();
