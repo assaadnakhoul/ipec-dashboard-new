@@ -669,6 +669,8 @@ document.querySelectorAll("#month-table thead th").forEach((th, idx)=>{
     wireCollapsibles();
     recomputeAndRender();
     updateMonthTableArrows();
+    wireRefreshButton();
+
   }catch(err){
     log("FATAL:", String(err));
     const badge = document.getElementById("badge-source");

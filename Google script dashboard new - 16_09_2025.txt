@@ -1,0 +1,997 @@
+/***** IPEC — Master Builder (owner-agnostic, All-Drives, A→B parity) ******
+ * FOLDER A
+ *   Name: "INV-XXX-YYYY <Customer>.xlsx"
+ *   Items: start row 12, cols A..E → ItemCode, Desc, Qty, UnitPrice, LineTotal
+ *   InvoiceTotal: B8
+ *   Meta: B1=Invoice, B2=Date, B3=Client, B5=Phone
+ *
+ * FOLDER B
+ *   Name: "IPEC Invoice XXX-YYYY.xlsx"
+ *   Items: header row auto-detected (usually row 8), then A..E → Code, Desc, Qty, Unit, Line
+ *   Stop at "SUB TOTAL USD"/"TOTAL" row. InvoiceTotal = cell to the right of that label.
+ *   Meta (labels in col A): Invoice n° / Date / Bill to|Customer|Client / Phone
+ *
+ * PARITY LOGIC
+ *   Process tags (MMYY) from START_TAG (default 0125) up to the last tag present in either folder.
+ *   For each tag: process A first, then B.
+ *   A is “present” if name OR url OR normalized name matches.
+ *   B is “present” only if BOTH name AND url match.
+ *
+ * Also:
+ *   - Owner-agnostic Drive listing (works in “Shared with me”), All Drives.
+ *   - Items enrichment from Items tab (ItemCode→Supplier[G], Category[D], Sub-category[E]).
+ *   - Time/batch guards + auto-continue trigger inside office window.
+ *****************************************************************************/
+
+const CFG = {
+  // -------- FOLDERS --------
+  folderAId: '1SrLECEwccnm_304DRxJW47I2sMJ0djxH',
+  folderBId: '1q2I1jiFyTACvxjG82v89qPl0_9QsrXCg',
+
+  // -------- MASTER --------
+  MASTER_SHEET_ID: '1YGexar8HPS46hMDGXeajmfFfk9-sbuYUdEP-04HvRj4',
+  MASTER_TAB: 'Sheet1',
+  OUT_HEAD: [
+    'InvoiceName','InvoicePath','Type','Client','Phone','ItemCode','ProductDescription',
+    'Qty','UnitPrice','LineTotal','InvoiceTotal','Supplier','Category','Sub-category','InvoiceDate'
+  ],
+
+  // -------- ITEMS ENRICHMENT (same spreadsheet) --------
+  ITEMS_TAB: 'Items',
+  ITEMS_KEY_COL: 1,        // A: ItemCode
+  ITEMS_CATEGORY_COL: 4,   // D: Category
+  ITEMS_SUBCATEGORY_COL: 5,// E: Sub-category
+  ITEMS_SUPPLIER_COL: 7,   // G: Supplier
+
+  // -------- EXCEL IMPORT (Drive Advanced API v3) --------
+  EXCEL_MIMES: [
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel'
+  ],
+  DATA_SHEET_CANDIDATES: ['INVOICE','Invoice','INV 1','INV1','Sheet1','Sheet','Feuil1','Feuille1','Data','Export'],
+  CLEANUP_TEMP_IMPORTS: true,
+
+  // -------- SYNTHÈSE source (Items tab incremental copy) --------
+  ITEMS_SOURCE_ID: '1UoLZe0zs4moThJKqIXJPF_td1ELf5yDz',
+  ITEMS_SOURCE_TAB: 'Synthese',
+  ITEMS_SOURCE_START_ROW: 1049,
+  PROP_ITEMS_LAST_SRC_ROW: 'ITEMS_LAST_SRC_ROW',
+
+  // -------- CHUNKING / TIME GUARD --------
+  MAX_FILES_PER_RUN: 100,
+  TIME_GUARD_MS: 240000,   // 4 minutes
+
+  // -------- TAG CURSOR --------
+  START_TAG: '0125',
+  PROP_RUN_TAG_CURSOR: 'RUN_TAG_CURSOR'
+};
+
+/* ========================= Window & Auto-continue helpers ========================= */
+
+// Only run Mon–Sat, 08:00–17:30
+function withinWindow_() {
+  const now = new Date();
+  const dow = now.getDay();              // 0=Sun .. 6=Sat
+  if (dow === 0) return false;           // exclude Sunday
+  const mins = now.getHours() * 60 + now.getMinutes();
+  return mins >= 8 * 60 && mins <= 17 * 60 + 30; // 08:00 .. 17:30
+}
+function nextAllowedTime_() {
+  const now = new Date();
+  if (withinWindow_()) {
+    const d = new Date(now);
+    const m = d.getMinutes();
+    const add = (m % 30 === 0 && d.getSeconds() < 20) ? 0 : (30 - (m % 30));
+    d.setMinutes(m + add, 10, 0);  // next :00/:30 + 10s
+    return d;
+  }
+  const d = new Date(now);
+  d.setSeconds(0, 0);
+  const mins = d.getHours() * 60 + d.getMinutes();
+  if (mins > 17 * 60 + 30) d.setDate(d.getDate() + 1);
+  d.setHours(8, 0, 10, 0);
+  while (d.getDay() === 0) d.setDate(d.getDate() + 1); // skip Sunday
+  return d;
+}
+
+function scheduleAutoContinue_() {
+  try {
+    // Best effort delete old trigger (ignore if scope missing)
+    try {
+      ScriptApp.getProjectTriggers()
+        .filter(t => t.getHandlerFunction && t.getHandlerFunction() === 'BuildMasterIncremental_Gated' &&
+                     t.getEventType && t.getEventType() === ScriptApp.EventType.CLOCK)
+        .forEach(t => { try { ScriptApp.deleteTrigger(t); } catch (_) {} });
+    } catch (e) {
+      Logger.log('scheduleAutoContinue_: cannot list/delete triggers (scope?): ' + e);
+    }
+
+    // Create next run trigger
+    try {
+      const when = nextAllowedTime_();
+      ScriptApp.newTrigger('BuildMasterIncremental_Gated').timeBased().at(when).create();
+      Logger.log('Auto-continue scheduled for: ' + when);
+    } catch (e) {
+      Logger.log('scheduleAutoContinue_: cannot create trigger (scope?): ' + e);
+    }
+  } catch (err) {
+    Logger.log('scheduleAutoContinue_ general error: ' + err);
+  }
+}
+
+/* =============================== MAIN BUILDER (cursor-aware) =============================== */
+
+function BuildMasterIncremental() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) { Logger.log('Lock busy; skipping.'); return; }
+
+  const props = PropertiesService.getDocumentProperties();
+  try {
+    const ss = openSpreadsheetWithRetry_(CFG.MASTER_SHEET_ID);
+    const sh = getOrCreateSheetWithHeader_(ss, CFG.MASTER_TAB, CFG.OUT_HEAD);
+    cleanMasterVisuals_(sh); // keep master UI honest
+
+    // Discover tags across both folders
+    const tagsUniverse = collectAllTags_(CFG.folderAId, CFG.folderBId, parseInvAInfo_, parseInvBInfo_);
+    if (!tagsUniverse.length) { Logger.log('No tags found in folders.'); return; }
+    const maxTag = tagsUniverse[tagsUniverse.length - 1];
+
+    // Start from saved cursor or configured START_TAG
+    let cursor = props.getProperty(CFG.PROP_RUN_TAG_CURSOR) || CFG.START_TAG || maxTag;
+
+    // Tags to work on: from cursor to maxTag (inclusive)
+    const workTags = tagsUniverse.filter(t => t >= cursor && t <= maxTag);
+    if (!workTags.length) { Logger.log('Nothing to do (no tags >= cursor).'); return; }
+
+    const enrich = loadItemsMap_(ss);
+    const t0 = Date.now();
+    let processed = 0;
+
+    // Process one folder for a given tag
+    const processFolderByMissing = (folderId, whereLabel, parseInfoFn, tag, rowReader, metaReader) => {
+      const folderFiles = listFolderFilesForTag_(folderId, parseInfoFn, tag);
+      const presence    = listMasterPresenceForTypeTag_(sh, whereLabel, tag);
+
+      // Build "missing" list based on presence
+      const missing = folderFiles
+        .filter(x => {
+          const n  = x.file.getName();
+          const u  = x.file.getUrl();
+          const nn = normalizeName_(n);
+          if (whereLabel === 'B') return !(presence.names.has(n) && presence.urls.has(u));
+          return !(presence.names.has(n) || presence.urls.has(u) || presence.normNames.has(nn));
+        })
+        .sort((a,b) => a.num - b.num);
+
+      logStep_('MISS', `Folder ${whereLabel} ${tag}`, { missing: missing.length, nums: missing.map(x=>x.num) });
+
+      // --- In-run de-dupe by name/url/normalized-name ---
+      const seenRunNames = new Set(presence.names);
+      const seenRunUrls  = new Set(presence.urls);
+      const seenRunNN    = new Set(presence.normNames);
+
+      const missingDedup = [];
+      for (const m of missing) {
+        const nm = m.file.getName();
+        const url = m.file.getUrl();
+        const nn  = normalizeName_(nm);
+        const already = (whereLabel === 'B')
+          ? (seenRunNames.has(nm) && seenRunUrls.has(url))
+          : (seenRunNames.has(nm) || seenRunUrls.has(url) || seenRunNN.has(nn));
+        if (already) continue;
+        seenRunNames.add(nm);
+        seenRunUrls.add(url);
+        seenRunNN.add(nn);
+        missingDedup.push(m);
+      }
+      logStep_('MISS', `After in-run de-dupe`, { toImport: missingDedup.length });
+
+      // Iterate ONLY the deduped list
+      for (let i = 0; i < missingDedup.length; i++) {
+        if (processed >= CFG.MAX_FILES_PER_RUN || (Date.now() - t0) > CFG.TIME_GUARD_MS) {
+          props.setProperty(CFG.PROP_RUN_TAG_CURSOR, tag); // resume same tag next run
+          scheduleAutoContinue_();
+          return false;
+        }
+
+        const { file } = missingDedup[i];
+        const fileName = file.getName();
+        const fileUrl  = file.getUrl();
+
+        try {
+          const openRes = importExcelToSheet_v3_(file);
+          try {
+            const dataSh = pickDataSheet_(openRes.spreadsheet);
+            if (!dataSh) { processed++; continue; }
+
+            ensureSheetReadable_(dataSh);
+
+            const values = readRangeValuesWithRetry_(dataSh.getDataRange());
+            const rows   = rowReader(values);
+            if (!rows.length) { Logger.log(`[${whereLabel}] ${fileName} produced 0 items.`); processed++; continue; }
+
+            const meta   = metaReader(values);
+
+            const block = rows.map(r => {
+              const ic  = toStr(r.itemCode).toUpperCase();
+              const enr = enrich.get(ic) || { supplier:'', category:'', subcategory:'' };
+              return [
+                fileName, fileUrl, whereLabel,
+                meta.client, meta.phone,
+                r.itemCode, r.description, r.qty, r.unitPrice, r.lineTotal,
+                meta.invoiceTotal, enr.supplier, enr.category, enr.subcategory,
+                _parseToDateOnly_(meta.date, Session.getScriptTimeZone())
+              ];
+            });
+
+            // Write ONCE, then format Date column (O)
+            const startRow = sh.getLastRow() + 1;
+            sh.getRange(startRow, 1, block.length, CFG.OUT_HEAD.length).setValues(block);
+            sh.getRange(startRow, 15, block.length, 1).setNumberFormat('dd/MM/yyyy');
+
+            // Update presence so later files in this same run see it as present
+            presence.names.add(fileName);
+            presence.urls.add(fileUrl);
+            presence.normNames.add(normalizeName_(fileName));
+
+            logStep_('APPEND', 'Rows appended', { file: fileName, count: block.length, tag, type: whereLabel });
+          } finally {
+            if (CFG.CLEANUP_TEMP_IMPORTS && openRes.toDelete) {
+              try { Drive.Files.delete(openRes.toDelete, { supportsAllDrives:true }); } catch (_) {}
+            }
+          }
+        } catch (e) {
+          Logger.log('Failed on file ' + fileName + ' → ' + (e && e.message ? e.message : e));
+        }
+        processed++;
+      }
+      return true;
+    };
+
+    // Iterate tags: A then B
+    for (let ti = 0; ti < workTags.length; ti++) {
+      const tag = workTags[ti];
+      logStep_('TAG', 'Processing tag', { tag });
+
+      if (!processFolderByMissing(CFG.folderAId, 'A', parseInvAInfo_, tag, readItemsA_, metaA_)) return;
+      if (!processFolderByMissing(CFG.folderBId, 'B', parseInvBInfo_, tag, readItemsB_, metaB_)) return;
+
+      // Tag complete → advance cursor
+      const next = workTags[ti + 1];
+      if (next) props.setProperty(CFG.PROP_RUN_TAG_CURSOR, next);
+      else props.deleteProperty(CFG.PROP_RUN_TAG_CURSOR);
+
+      if ((Date.now() - t0) > CFG.TIME_GUARD_MS) { scheduleAutoContinue_(); return; }
+    }
+
+logStep_('DONE', 'All tags completed', { from: CFG.START_TAG, to: maxTag, processed });
+
+} finally {
+  try {
+    SpreadsheetApp.flush(); // ensure all setValues are committed
+    Master_DeduplicateByInvoiceItemExact();
+    if (typeof NormalizeInvoiceDatesInMaster_ === 'function') {
+      NormalizeInvoiceDatesInMaster_();
+    }
+
+  } catch (e) {
+    Logger.log('Post-build cleanup failed: ' + e);
+  }
+  lock.releaseLock();
+}
+}
+
+
+function BuildMasterIncremental_Gated() {
+  if (!withinWindow_()) { Logger.log('Outside window; skipping BuildMasterIncremental'); return; }
+  BuildMasterIncremental();
+}
+
+/* ====================== Items updater (Synthèse → Items) ====================== */
+
+function UpdateItemsFromSyntheseIncremental() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) { Logger.log('Items lock busy; skipping.'); return; }
+
+  try {
+    const props    = PropertiesService.getDocumentProperties();
+    const ssMaster = openSpreadsheetWithRetry_(CFG.MASTER_SHEET_ID);
+    const shItems  = ssMaster.getSheetByName(CFG.ITEMS_TAB) || ssMaster.insertSheet(CFG.ITEMS_TAB);
+
+    const ssSrc = openSpreadsheetWithRetry_(CFG.ITEMS_SOURCE_ID);
+    const shSrc = ssSrc.getSheetByName(CFG.ITEMS_SOURCE_TAB) || ssSrc.getSheets()[0];
+
+    const srcLastRow = shSrc.getLastRow();
+    if (srcLastRow < CFG.ITEMS_SOURCE_START_ROW) return;
+
+    let lastCopied = parseInt(props.getProperty(CFG.PROP_ITEMS_LAST_SRC_ROW) || (CFG.ITEMS_SOURCE_START_ROW - 1), 10);
+    if (isNaN(lastCopied) || lastCopied < CFG.ITEMS_SOURCE_START_ROW - 1) lastCopied = CFG.ITEMS_SOURCE_START_ROW - 1;
+
+    const start = lastCopied + 1;
+    if (start > srcLastRow) return;
+
+    const srcLastCol = shSrc.getLastColumn();
+    const numRows    = srcLastRow - start + 1;
+    const values     = readRangeValuesWithRetry_(shSrc.getRange(start, 1, numRows, srcLastCol));
+
+    if (values.length) {
+      shItems.getRange(shItems.getLastRow()+1, 1, values.length, srcLastCol).setValues(values);
+      props.setProperty(CFG.PROP_ITEMS_LAST_SRC_ROW, String(srcLastRow));
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function UpdateItemsFromSyntheseIncremental_Gated() {
+  if (!withinWindow_()) { Logger.log('Outside window; skipping UpdateItemsFromSyntheseIncremental'); return; }
+  UpdateItemsFromSyntheseIncremental();
+}
+
+/* =============================== Web JSON endpoint =============================== */
+
+function fetchSheetCsv_(sheetId, gid) {
+  const url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+  const resp = UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }
+  });
+  const code = resp.getResponseCode();
+  const text = resp.getContentText();
+
+  if (code !== 200) throw new Error(`CSV export failed (${code})`);
+  if (/<html[\s>]/i.test(text)) throw new Error('CSV export returned HTML (auth/permission issue).');
+  return Utilities.parseCsv(text);
+}
+
+function resolveMasterGid_(sheetId, preferredTabName) {
+  const ss = SpreadsheetApp.openById(sheetId);
+  if (preferredTabName) {
+    const sh = ss.getSheetByName(preferredTabName);
+    if (sh) return { gid: String(sh.getSheetId()), name: sh.getName(), score: 999 };
+  }
+  const wanted = new Set(EXPECTED_MASTER_HEADERS.map(_norm));
+  let best = { gid: '0', name: '', score: -1 };
+  ss.getSheets().forEach(sh => {
+    const n = Math.min(sh.getLastColumn(), 50);
+    if (n < 2) return;
+    const headers = sh.getRange(1,1,1,n).getValues()[0];
+    const score = headers.reduce((s,h)=> s + (wanted.has(_norm(h)) ? 1 : 0), 0);
+    if (score > best.score) best = { gid: String(sh.getSheetId()), name: sh.getName(), score };
+  });
+  return best;
+}
+
+function doGet(e) {
+  try {
+    const p = (e && e.parameter) || {};
+
+    // Optional rebuild via webapp ?rebuild=1
+    const wantRebuild = String(p.rebuild || p.refresh || "") === "1";
+    if (wantRebuild) {
+      const lock = LockService.getScriptLock();
+      if (lock.tryLock(280000)) {
+        try { BuildMasterIncremental(); }
+        catch (err) { console.error("BuildMasterIncremental failed:", err); }
+        finally { lock.releaseLock(); }
+      }
+    }
+
+    const sheetId  = CFG.MASTER_SHEET_ID;   // <-- use config
+    const masterTab = CFG.MASTER_TAB;
+
+    // resolve gid of MASTER_TAB (or best match)
+    let meta = { gid: p.gid || '' , name: '', score: -1 };
+    if (!meta.gid) meta = resolveMasterGid_(sheetId, masterTab);
+
+    const rows = fetchSheetCsv_(sheetId, meta.gid);
+    if (!rows || rows.length < 2) {
+      return ContentService.createTextOutput(JSON.stringify({
+        error: 'No rows from CSV', gid: meta.gid, tab: meta.name, score: meta.score
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Column positions (A..O)
+    const A=0,B=1,C=2,D=3,E=4,F=5,G=6,H=7,I=8,J=9,K=10,L=11,M=12,N=13,O=14;
+
+    const data = rows.slice(1).map(r => ({
+      InvoiceName:           r[A] || '',
+      InvoicePath:           r[B] || '',
+      Type:                  r[C] || '',
+      Client:                r[D] || '',
+      Phone:                 r[E] || '',
+      ItemCode:              (r[F] || '').toString().toUpperCase().replace(/\s+/g,''),
+      'Product/Description': r[G] || '',
+      Qty:                   r[H] || 0,
+      UnitPrice:             r[I] || 0,
+      LineTotal:             r[J] || '',
+      InvoiceTotal:          r[K] || '',
+      Supplier:              r[L] || '',
+      Category:              r[M] || '',
+      'Sub-category':        r[N] || '',
+      Date:                  r[O] || ''
+    }));
+
+    const limit = p.limit ? Math.max(0, parseInt(p.limit,10) || 0) : 0;
+    const out   = limit > 0 ? data.slice(0, limit) : data;
+
+    return ContentService.createTextOutput(JSON.stringify({ data: out }))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// Minimal helpers for doPost() compatibility if you use it
+function _json(obj){ return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
+function withLock_(fn){ const lock=LockService.getScriptLock(); if(!lock.tryLock(30*1000)) return _json({ok:false,error:'busy'}); try{ return fn(); } finally{ lock.releaseLock(); } }
+function requireAuth_(_e){ /* no-op placeholder; add auth if needed */ }
+
+function doPost(e) {
+  return withLock_(() => {
+    try {
+      requireAuth_(e);
+      const body = e.postData && e.postData.contents ? JSON.parse(e.postData.contents) : {};
+      const action = String(body.action || '').toLowerCase();
+
+      if (action === 'ensureclient') {
+        const info = ensureClient_ ? ensureClient_(body.client || {}) : { ok:false, error:'ensureClient_ not implemented' };
+        return _json({ ok: true, ...info });
+      }
+
+      if (action === 'createinvoice') {
+        const inv   = body.invoice || {};
+        const items = body.items   || [];
+        const clt   = body.client  || {};
+        const out   = createInvoiceFromTemplate_ ? createInvoiceFromTemplate_(inv, items, clt) : { ok:false, error:'createInvoiceFromTemplate_ not implemented' };
+        return _json(out);
+      }
+
+      return _json({ ok: false, error: 'Unknown action. Use action=ensureClient or action=createInvoice' });
+    } catch (err) {
+      return _json({ ok: false, error: String(err && err.message || err), stack: (err && err.stack) || null });
+    }
+  });
+}
+
+/* ================================ Readers & Meta ================================ */
+
+function _normLbl_(s) {
+  return toStr(s)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase().replace(/\s+/g,' ').trim();
+}
+
+// A invoices
+function readItemsA_(values) {
+  const isHeaderish = row => {
+    const a = _normLbl_(row[0]), b = _normLbl_(row[1]), c = _normLbl_(row[2]);
+    return (a === 'model' || a === 'item code' || a === 'code') ||
+           (b === 'description' || b === 'designation' || b === 'desc' || b === 'الوصف') ||
+           (c === 'qty' || c === 'quantity' || c === 'الكمية');
+  };
+
+  const stopOnTotal = row => {
+    for (let c = 0; c < Math.min(row.length, 8); c++) {
+      const t = _normLbl_(row[c]);
+      if (t.includes('total usd') || t === 'total' || t.includes('sub total') || t.includes('subtotal') ||
+          t.includes('الاجمالي') || t.includes('المجموع')) return true;
+    }
+    return false;
+  };
+
+  const out = [];
+  for (let r = 12 - 1; r < values.length; r++) {
+    const row = values[r] || [];
+    if (stopOnTotal(row)) break;
+
+    const itemCode  = toStr(row[0]).trim();
+    const desc      = toStr(row[1]).trim(); // force from column B
+    if (!itemCode && !desc) break;
+    if (isHeaderish(row)) continue;
+
+    const qty       = row[2];
+    const unitPrice = row[3];
+    const lineTotal = row[4];
+    out.push({ itemCode, description: desc, qty, unitPrice, lineTotal });
+  }
+  return out;
+}
+
+function metaA_(values) {
+  const get = (r,c) => toStr((values[r]||[])[c]).trim();
+  let invoice     = get(0,1);   // B1
+  let date        = get(1,1);   // B2
+  let client      = get(2,1);   // B3
+  let phone       = get(4,1);   // B5
+  let invoiceTotal= get(7,1);   // B8
+
+  const top = Math.min(values.length, 35);
+  const lab = {
+    inv: new Set(['invoice n°','invoice no','invoice #','invoice','facture','facture n°','n° facture','فاتورة','رقم الفاتورة']),
+    date:new Set(['date','invoice date','تاريخ','تاريخ الفاتورة']),
+    cli: new Set(['client','customer','bill to','billed to','nom du client','اسم العميل','العميل','الزبون']),
+    tel: new Set(['phone','tel','telephone','téléphone','هاتف','تلفون','رقم الهاتف'])
+  };
+
+  const getByLabel = (labels) => {
+    for (let r = 0; r < top; r++) {
+      const a = _normLbl_(values[r]?.[0]); if (labels.has(a)) return toStr(values[r]?.[1]).trim();
+      const b = _normLbl_(values[r]?.[1]); if (labels.has(b)) return toStr(values[r]?.[2]).trim();
+    }
+    return '';
+  };
+
+  if (!invoice) invoice = getByLabel(lab.inv);
+  if (!date)    date    = getByLabel(lab.date);
+  if (!client)  client  = getByLabel(lab.cli);
+  if (!phone)   phone   = getByLabel(lab.tel);
+
+  if (!invoiceTotal) {
+    outer: for (let r = 0; r < Math.min(values.length, 120); r++) {
+      const row = values[r] || [];
+      for (let c = 0; c < Math.min(row.length, 10); c++) {
+        const t = _normLbl_(row[c]);
+        if (t.includes('sub total') || t.includes('subtotal') || t.includes('total usd') || t === 'total' ||
+            t.includes('المجموع') || t.includes('الاجمالي')) {
+          invoiceTotal = toStr(row[c + 1] ?? row[4] ?? '').trim();
+          break outer;
+        }
+      }
+    }
+  }
+
+  return { invoice, date, client, phone, invoiceTotal };
+}
+
+// B invoices
+function readItemsB_(values) {
+  const isHeaderA = s => ['item code','item','code'].includes(_normLbl_(s));
+  const isHeaderB = s => ['description','designation','desc','الوصف'].includes(_normLbl_(s));
+  const isHeaderC = s => _normLbl_(s) === 'qty' || _normLbl_(s) === 'quantity' || _normLbl_(s) === 'الكمية';
+  const isHeaderD = s => _normLbl_(s).replace(/\s+/g,'') === 'u.price';
+  const isHeaderE = s => _normLbl_(s).replace(/\s+/g,'') === 't.price';
+
+  let headerRow = -1; // zero-based
+  for (let r = 5; r <= Math.min(values.length - 1, 14); r++) {
+    const A = (values[r]||[])[0], B = (values[r]||[])[1], C = (values[r]||[])[2], D = (values[r]||[])[3], E = (values[r]||[])[4];
+    if (isHeaderA(A) && isHeaderB(B) && (isHeaderC(C) || isHeaderD(D) || isHeaderE(E))) { headerRow = r; break; }
+  }
+  let start = (headerRow >= 0 ? headerRow + 2 : 9);
+  start = Math.max(1, start);
+
+  const stopOnLabel = row => {
+    for (let c = 0; c < Math.min(row.length, 8); c++) {
+      const t = _normLbl_(row[c]);
+      if (t.includes('sub total') || t.includes('subtotal') || t.includes('total usd') || t === 'total' ||
+          t.includes('المجموع') || t.includes('الاجمالي')) return true;
+    }
+    return false;
+  };
+  const isHeaderish = row => {
+    const a = _normLbl_(row[0]), b = _normLbl_(row[1]), c = _normLbl_(row[2]);
+    return (a === 'item code' || a === 'item' || a === 'code') ||
+           (b === 'description' || b === 'designation' || b === 'desc' || b === 'الوصف') ||
+           (c === 'qty' || c === 'quantity' || c === 'الكمية');
+  };
+
+  const out = [];
+  for (let r = start - 1; r < values.length; r++) {
+    const row = values[r] || [];
+    if (stopOnLabel(row)) break;
+
+    const itemCode  = toStr(row[0]).trim();
+    const desc      = toStr(row[1]).trim();
+    if (!itemCode && !desc) break;
+    if (isHeaderish(row)) continue;
+
+    const qty       = row[2];
+    const unitPrice = row[3];
+    const lineTotal = row[4];
+    out.push({ itemCode, description: desc, qty, unitPrice, lineTotal });
+  }
+  return out;
+}
+
+function metaB_(values) {
+  const topRows = Math.min(values.length, 40);
+  const labs = {
+    inv:  new Set(['invoice n°','invoice no','invoice #','invoice','facture','facture n°','n° facture','فاتورة','رقم الفاتورة']),
+    date: new Set(['date','invoice date','تاريخ','تاريخ الفاتورة']),
+    cli:  new Set(['bill to','customer','client','nom du client','اسم العميل','العميل','الزبون']),
+    tel:  new Set(['phone','tel','telephone','téléphone','هاتف','تلفون','رقم الهاتف'])
+  };
+
+  const readLabeled = (labels) => {
+    for (let r = 0; r < topRows; r++) {
+      const A = _normLbl_(values[r]?.[0]); if (labels.has(A)) return toStr(values[r]?.[1]).trim();
+      const B = _normLbl_(values[r]?.[1]); if (labels.has(B)) return toStr(values[r]?.[2]).trim();
+    }
+    return '';
+  };
+
+  let total = '';
+  outer: for (let r = 0; r < Math.min(values.length, 120); r++) {
+    const row = values[r] || [];
+    for (let c = 0; c < Math.min(row.length, 10); c++) {
+      const t = _normLbl_(row[c]);
+      if (t.includes('sub total') || t.includes('subtotal') || t.includes('total usd') || t === 'total' ||
+          t.includes('المجموع') || t.includes('الاجمالي')) {
+        total = toStr(row[c + 1] ?? row[4] ?? '').trim();
+        break outer;
+      }
+    }
+  }
+
+  return {
+    invoice: readLabeled(labs.inv),
+    date:    readLabeled(labs.date),
+    client:  readLabeled(labs.cli),
+    phone:   readLabeled(labs.tel),
+    invoiceTotal: total
+  };
+}
+
+/* ================================ Parsing / Listing ================================ */
+
+function parseInvAInfo_(name) {
+  const m = /\bINV-(\d+)-(\d{4})\b/i.exec(String(name || ''));
+  return m ? { num: parseInt(m[1], 10), tag: m[2] } : null;
+}
+function parseInvBInfo_(name) {
+  const m = /IPEC\s*Invoice[^\d]*?(\d+)\s*-\s*(\d{4})/i.exec(String(name || ''));
+  return m ? { num: parseInt(m[1], 10), tag: m[2] } : null;
+}
+
+function listExcelFilesAllDrives_(folderId) {
+  const q = `'${folderId}' in parents and trashed=false and (` +
+            `mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or ` +
+            `mimeType='application/vnd.ms-excel' or ` +
+            `name contains '.xlsx' or name contains '.xls')`;
+  const params = {
+    q,
+    corpora: 'allDrives',
+    includeItemsFromAllDrives: true,
+    supportsAllDrives: true,
+    fields: 'files(id,name,mimeType),nextPageToken',
+    pageSize: 1000
+  };
+  let items = [], token;
+  do {
+    if (token) params.pageToken = token;
+    const res = Drive.Files.list(params);
+    if (res && res.files) items = items.concat(res.files);
+    token = res.nextPageToken;
+  } while (token);
+  return items;
+}
+
+function getFolderMaxInfo_(folderId, parseInfoFn) {
+  let best = { num: 0, tag: '' };
+  const it = DriveApp.getFolderById(folderId).getFiles();
+  while (it.hasNext()) {
+    const f = it.next();
+    const mt = f.getMimeType();
+    const isExcel = (CFG.EXCEL_MIMES && CFG.EXCEL_MIMES.indexOf(mt) !== -1) || /\.xlsx?$/i.test(f.getName());
+    if (!isExcel) continue;
+    const info = parseInfoFn(f.getName());
+    if (info && (info.tag > best.tag || (info.tag === best.tag && info.num > best.num))) best = info;
+  }
+  return best;
+}
+
+function listFolderFilesForTag_(folderId, parseInfoFn, tag) {
+  const items = listExcelFilesAllDrives_(folderId);
+  const out = [];
+  for (const it of items) {
+    const info = parseInfoFn(it.name);
+    if (info && info.tag === tag) out.push({ file: DriveApp.getFileById(it.id), num: info.num, tag: info.tag });
+  }
+  Logger.log(`Folder ${folderId} tag ${tag}: found ${out.length} Excel file(s) across all drives.`);
+  return out;
+}
+
+/* ================================ Presence / Enrichment ================================ */
+
+function normalizeName_(s) { return String(s || '').toLowerCase().trim().replace(/\.(xlsx|xls)$/i, ''); }
+
+function listMasterPresenceForTypeTag_(sh, typeLetter, tag) {
+  const out = { names: new Set(), urls: new Set(), normNames: new Set() };
+  if (!tag) return out;
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return out;
+
+  const vals = sh.getRange(2, 1, lastRow - 1, 3).getValues(); // A:name, B:url/path, C:type
+  const parseInfo = (typeLetter === 'A') ? parseInvAInfo_ : parseInvBInfo_;
+
+  for (let i = 0; i < vals.length; i++) {
+    const name = toStr(vals[i][0]);
+    const url  = toStr(vals[i][1]);
+    const type = toStr(vals[i][2]).trim().toUpperCase();
+    if (type !== typeLetter || !name) continue;
+
+    const info = parseInfo(name);
+    if (info && info.tag === tag) {
+      out.names.add(name);
+      out.normNames.add(normalizeName_(name));
+      if (url) out.urls.add(url);
+    }
+  }
+  return out;
+}
+
+function loadItemsMap_(ssMaster) {
+  const sh = ssMaster.getSheetByName(CFG.ITEMS_TAB);
+  if (!sh) return new Map();
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return new Map();
+  const lastCol = Math.max(
+    CFG.ITEMS_KEY_COL, CFG.ITEMS_CATEGORY_COL, CFG.ITEMS_SUBCATEGORY_COL, CFG.ITEMS_SUPPLIER_COL
+  );
+  const values = readRangeValuesWithRetry_(sh.getRange(2, 1, lastRow - 1, lastCol)); // skip header
+  const map = new Map();
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const code = toStr(row[CFG.ITEMS_KEY_COL - 1]).trim().toUpperCase();
+    if (!code) continue;
+    const category    = toStr(row[CFG.ITEMS_CATEGORY_COL    - 1]).trim();
+    const subcategory = toStr(row[CFG.ITEMS_SUBCATEGORY_COL - 1]).trim();
+    const supplier    = toStr(row[CFG.ITEMS_SUPPLIER_COL    - 1]).trim();
+    map.set(code, { supplier, category, subcategory });
+  }
+  return map;
+}
+
+/* ================================ Import utils ================================ */
+
+function importExcelToSheet_v3_(file) {
+  const blob = file.getBlob();
+  const meta = { name: stripExt_(file.getName()) + ' (Imported)', mimeType: 'application/vnd.google-apps.spreadsheet' };
+  const res  = Drive.Files.create(meta, blob, { supportsAllDrives:true, fields:'id' });
+  if (!res || !res.id) throw new Error('Excel import failed (no id).');
+  return { spreadsheet: SpreadsheetApp.openById(res.id), toDelete: res.id };
+}
+
+function pickDataSheet_(ss) {
+  for (const nm of CFG.DATA_SHEET_CANDIDATES) {
+    const sh = ss.getSheetByName(nm); if (sh) return sh;
+  }
+  const vis = ss.getSheets().filter(s => !s.isSheetHidden());
+  return vis.length ? vis[0] : ss.getSheets()[0];
+}
+
+/* ======================== Readability & Cleanup helpers ======================== */
+
+function ensureSheetReadable_(sh) {
+  try {
+    if (sh.isSheetHidden && sh.isSheetHidden()) sh.showSheet();
+    try { const filter = sh.getFilter && sh.getFilter(); if (filter) filter.remove(); } catch (_) {}
+    try { sh.showRows(1, sh.getMaxRows()); } catch (_) {}
+    try { sh.showColumns(1, sh.getMaxColumns()); } catch (_) {}
+  } catch (e) {
+    Logger.log('ensureSheetReadable_ (soft) failed: ' + e);
+  }
+  return sh;
+}
+
+function cleanMasterVisuals_(sh) {
+  try {
+    try { const filter = sh.getFilter && sh.getFilter(); if (filter) filter.remove(); } catch (_) {}
+    try { sh.showRows(1, sh.getMaxRows()); } catch (_) {}
+    try { sh.showColumns(1, sh.getMaxColumns()); } catch (_) {}
+  } catch (e) {
+    Logger.log('cleanMasterVisuals_ (soft) failed: ' + e);
+  }
+}
+
+function purgeOldTempImports_(daysOld) {
+  const cutoff = Date.now() - daysOld*24*60*60*1000;
+  try {
+    const res = Drive.Files.list({
+      q: "mimeType='application/vnd.google-apps.spreadsheet' and name contains ' (Imported)' and trashed=false",
+      corpora: 'allDrives', includeItemsFromAllDrives: true, supportsAllDrives: true,
+      fields: 'files(id,name,createdTime),nextPageToken', pageSize: 1000
+    });
+    (res.files||[]).forEach(f => {
+      if (new Date(f.createdTime).getTime() < cutoff) {
+        try { Drive.Files.delete(f.id, { supportsAllDrives:true }); } catch(_) {}
+      }
+    });
+  } catch (e) { Logger.log('purgeOldTempImports_ failed: ' + e); }
+}
+
+function logStep_(phase, detail, extra) {
+  Logger.log(`[${phase}] ${detail}${extra ? ' | ' + JSON.stringify(extra) : ''}`);
+}
+
+/* ==================== Tags collection across folders ==================== */
+function collectAllTags_(folderAId, folderBId, parseA, parseB) {
+  const seen = new Set();
+  const addFrom = (folderId, parseFn) => {
+    listExcelFilesAllDrives_(folderId).forEach(it => {
+      const info = parseFn(it.name);
+      if (info && info.tag) seen.add(String(info.tag));
+    });
+  };
+  addFrom(folderAId, parseA);
+  addFrom(folderBId, parseB);
+  return Array.from(seen).sort(); // MMYY lexicographically ok
+}
+
+/* ================================ Retry wrappers / utils ================================ */
+
+function tryWithRetry_(fn, tries, waitMs) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) { try { return fn(); } catch (e) { lastErr = e; Utilities.sleep(waitMs); } }
+  throw lastErr;
+}
+function openSpreadsheetWithRetry_(id) { return tryWithRetry_(() => SpreadsheetApp.openById(id), 3, 500); }
+function readRangeValuesWithRetry_(range) { return tryWithRetry_(() => range.getValues(), 3, 400); }
+
+function stripExt_(s) { return String(s).replace(/\.(xlsx|xls)$/i, ''); }
+function toStr(v) { return (v === null || v === undefined) ? '' : String(v); }
+
+/* ================================ Sheet helpers ================================ */
+
+function getOrCreateSheetWithHeader_(ss, tabName, headerArray) {
+  let sh = ss.getSheetByName(tabName);
+  if (!sh) sh = ss.insertSheet(tabName);
+
+  if (sh.getLastRow() === 0) {
+    sh.getRange(1, 1, 1, headerArray.length).setValues([headerArray]);
+    sh.setFrozenRows(1);
+    return sh;
+  }
+  const existing = sh.getRange(1, 1, 1, headerArray.length).getValues()[0];
+  const blank = existing.every(v => String(v ?? '').trim() === '');
+  if (blank) {
+    sh.getRange(1, 1, 1, headerArray.length).setValues([headerArray]);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+const EXPECTED_MASTER_HEADERS = [
+  'InvoiceName','InvoicePath','Type','Client','Phone','ItemCode','ProductDescription',
+  'Qty','UnitPrice','LineTotal','InvoiceTotal','Supplier','Category','Sub-category','InvoiceDate'
+];
+const _norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+
+/* ===== Exact-line de-dup (keeps all items; removes only true duplicates) ===== */
+function Master_DeduplicateByInvoiceItemExact() {
+  const ss = openSpreadsheetWithRetry_(CFG.MASTER_SHEET_ID);
+  const sh = ss.getSheetByName(CFG.MASTER_TAB);
+  const last = sh.getLastRow();
+  if (last < 2) return;
+
+  const nCols = CFG.OUT_HEAD.length; // A..O
+  const vals  = readRangeValuesWithRetry_(sh.getRange(2, 1, last - 1, nCols));
+
+  // A InvoiceName, F ItemCode, H Qty, I UnitPrice, J LineTotal
+  const A=0, F=5, H=7, I=8, J=9;
+
+  const seen = new Set();
+  const out  = [];
+
+  for (let i = 0; i < vals.length; i++) {
+    const r = vals[i];
+    const inv  = String(r[A] || '').trim();
+    const code = String(r[F] || '').trim().toUpperCase();
+    const qty  = Number(r[H] || 0);
+    const unit = Number(r[I] || 0);
+    const line = Number(r[J] || 0);
+
+    const key = [inv, code, qty, unit.toFixed(4), line.toFixed(4)].join('||');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+
+  sh.getRange(2, 1, last - 1, nCols).clearContent();
+  if (out.length) {
+    sh.getRange(2, 1, out.length, nCols).setValues(out);
+    sh.getRange(2, 15, out.length, 1).setNumberFormat('dd/MM/yyyy'); // O = InvoiceDate
+  }
+}
+
+/****************** Triggers: Mon–Fri 17:00, Sat 14:00 ******************/
+function CreateWeeklyTriggers_BuilderAndItems() {
+  const fns = new Set([
+    'BuildMasterIncremental_Gated',
+    'UpdateItemsFromSyntheseIncremental_Gated',
+    'BuildMasterIncremental',
+    'UpdateItemsFromSyntheseIncremental'
+  ]);
+
+  // Clear existing related triggers
+  ScriptApp.getProjectTriggers().forEach(t => {
+    const fn = t.getHandlerFunction && t.getHandlerFunction();
+    if (fn && fns.has(fn)) { try { ScriptApp.deleteTrigger(t); } catch (_) {} }
+  });
+
+  // Mon–Fri @ 17:00
+  const weekdays = [
+    ScriptApp.WeekDay.MONDAY,
+    ScriptApp.WeekDay.TUESDAY,
+    ScriptApp.WeekDay.WEDNESDAY,
+    ScriptApp.WeekDay.THURSDAY,
+    ScriptApp.WeekDay.FRIDAY
+  ];
+  weekdays.forEach(dow => {
+    ScriptApp.newTrigger('BuildMasterIncremental_Gated')
+      .timeBased().onWeekDay(dow).atHour(17).nearMinute(0).create();
+    ScriptApp.newTrigger('UpdateItemsFromSyntheseIncremental_Gated')
+      .timeBased().onWeekDay(dow).atHour(17).nearMinute(0).create();
+  });
+
+  // Saturday @ 14:00
+  ScriptApp.newTrigger('BuildMasterIncremental_Gated')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.SATURDAY).atHour(14).nearMinute(0).create();
+  ScriptApp.newTrigger('UpdateItemsFromSyntheseIncremental_Gated')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.SATURDAY).atHour(14).nearMinute(0).create();
+
+  Logger.log('Created weekly triggers: Mon–Fri 17:00, Sat 14:00 (script timezone).');
+}
+
+/* ===================== Date normalization helpers (optional) ===================== */
+
+function excelSerialToDate_(n) {
+  return new Date(Math.round((Number(n) - 25569) * 86400 * 1000));
+}
+function parseDateFlexible_(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (Object.prototype.toString.call(raw) === '[object Date]' && !isNaN(raw.getTime())) return raw;
+  if (typeof raw === 'number' || (/^\d+(\.\d+)?$/.test(String(raw).trim()))) {
+    try { const d = excelSerialToDate_(Number(raw)); if (!isNaN(d.getTime())) return d; } catch (_) {}
+  }
+  const s = String(raw).trim(); if (!s) return null;
+  const dmy = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (dmy) {
+    const dd = Number(dmy[1]), mm = Number(dmy[2]), yyyy = Number(dmy[3] < 100 ? (2000 + Number(dmy[3])) : dmy[3]);
+    const d = new Date(yyyy, mm - 1, dd); return isNaN(d.getTime()) ? null : d;
+  }
+  const d2 = new Date(s); return isNaN(d2.getTime()) ? null : d2;
+}
+function _midnightLocal_(d, tz) {
+  const yyyy = Utilities.formatDate(d, tz, 'yyyy');
+  const mm   = Utilities.formatDate(d, tz, 'MM');
+  const dd   = Utilities.formatDate(d, tz, 'dd');
+  return new Date(Number(yyyy), Number(mm) - 1, Number(dd), 0, 0, 0, 0);
+}
+function _parseToDateOnly_(raw, tz) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (Object.prototype.toString.call(raw) === '[object Date]' && !isNaN(raw.getTime())) return _midnightLocal_(raw, tz);
+  const s = String(raw).trim();
+  const isNum = /^-?\d+(\.\d+)?$/.test(s);
+  if (typeof raw === 'number' || isNum) {
+    const n = Number(raw); const d = new Date(Math.round((n - 25569) * 86400 * 1000));
+    if (!isNaN(d.getTime())) return _midnightLocal_(d, tz);
+  }
+  const m = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  if (m) { const dd = Number(m[1]), mm = Number(m[2]), yyyy = Number(m[3] < 100 ? (2000 + Number(m[3])) : m[3]); const d = new Date(yyyy, mm - 1, dd); return isNaN(d.getTime()) ? null : _midnightLocal_(d, tz); }
+  const d2 = new Date(s); if (!isNaN(d2.getTime())) return _midnightLocal_(d2, tz);
+  return null;
+}
+
+function NormalizeInvoiceDatesInMaster_() {
+  const ss = SpreadsheetApp.openById(CFG.MASTER_SHEET_ID);
+  const sh = ss.getSheetByName(CFG.MASTER_TAB);
+  if (!sh) { Logger.log('Master tab not found'); return; }
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) { Logger.log('No data to normalize'); return; }
+
+  const vals = sh.getRange(2, 15, lastRow - 1, 1).getValues(); // col O
+  let changed = 0;
+  const tz = Session.getScriptTimeZone();
+
+  for (let i = 0; i < vals.length; i++) {
+    const cur = vals[i][0];
+    const d = _parseToDateOnly_(cur, tz);
+    if (d) { vals[i][0] = d; changed++; }
+  }
+
+  sh.getRange(2, 15, vals.length, 1).setValues(vals).setNumberFormat('dd/MM/yyyy');
+  Logger.log(`InvoiceDate normalized: ${changed} row(s) updated.`);
+}
