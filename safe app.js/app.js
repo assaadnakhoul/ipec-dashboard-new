@@ -43,10 +43,6 @@ function imgHTML(code, alt=""){
   }).join(";");
   return `<img class="thumb" src="${first}" onerror="${onerr}" alt="${esc(alt)}">`;
 }
-// simple debounce
-function debounce(fn, ms=250){
-  let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); };
-}
 
 // uniq + sorted helper
 function uniqSorted(arr){
@@ -366,6 +362,8 @@ function renderTopClients(el, list, mode) {
 }
 
 
+
+
 function renderBestItems(el, list, mode){
   if (!el) return;
   el.innerHTML = "";
@@ -376,33 +374,23 @@ function renderBestItems(el, list, mode){
     return;
   }
 
-  // helper to render one row
-  function rowHTML(it, rank){
-    const valueHTML = (mode === "value")
-      ? fmtUSD(it.val)
-      : fmtInt(it.qty);
-    const codeSafe = esc(it.code || "");
-    const descSafe = esc(it.desc || "");
-
-    return `${imgHTML(it.code,it.code)}
-      <div class="grow">
-        <div class="name">${rank}. ${codeSafe}</div>
-        <div class="muted">${descSafe}</div>
-      </div>
-      <div class="value">${valueHTML}</div>
-      <button class="badge find-buyers" data-key="${codeSafe}" title="Show buyers for ${codeSafe}">Buyers</button>`;
-  }
-
   const top5  = list.slice(0, 5);
-  const rest  = list.slice(5);
+  const rest  = list.slice(5); // up to 15 more (your list is already top 20)
 
+  // render first 5 directly
   top5.forEach((it, i) => {
     const li = document.createElement("li");
     li.className = "li";
-    li.innerHTML = rowHTML(it, i + 1);
+    li.innerHTML = `${imgHTML(it.code,it.code)}
+      <div class="grow">
+        <div class="name">${i + 1}. ${esc(it.code)}</div>
+        <div class="muted">${esc(it.desc || "")}</div>
+      </div>
+      <div class="value">${mode === "value" ? fmtUSD(it.val) : fmtInt(it.qty)}</div>`;
     el.appendChild(li);
   });
 
+  // dropdown for the remaining items
   if (rest.length > 0) {
     const details = document.createElement("details");
     details.className = "show-more";
@@ -424,87 +412,72 @@ function renderBestItems(el, list, mode){
     rest.forEach((it, idx) => {
       const li = document.createElement("li");
       li.className = "li";
-      li.innerHTML = rowHTML(it, idx + 6);
+      li.innerHTML = `${imgHTML(it.code,it.code)}
+        <div class="grow">
+          <div class="name">${(idx + 6)}. ${esc(it.code)}</div>
+          <div class="muted">${esc(it.desc || "")}</div>
+        </div>
+        <div class="value">${mode === "value" ? fmtUSD(it.val) : fmtInt(it.qty)}</div>`;
       subList.appendChild(li);
     });
 
     details.appendChild(summary);
     details.appendChild(subList);
+    // put the details block as its own row in the list
     const wrapper = document.createElement("li");
     wrapper.className = "li";
     wrapper.style.display = "block";
-    wrapper.style.padding = "0";
+    wrapper.style.padding = "0"; // keep compact
     wrapper.appendChild(details);
     el.appendChild(wrapper);
   }
-
-  // delegate: clicking "Buyers" fills the Item Finder and runs the search
-  el.addEventListener("click", (ev) => {
-    const btn = ev.target.closest(".find-buyers");
-    if (!btn) return;
-    const key = btn.getAttribute("data-key") || "";
-    const box = document.getElementById("item-q");
-    if (box) {
-      box.value = key;
-      if (typeof runItemSearch === "function") runItemSearch(key);
-      box.scrollIntoView({ behavior:"smooth", block:"center" });
-    }
-  }, { passive:true });
 }
-
-/* ===== Per-Month table renderer + header arrows ===== */
 function renderMonthTable(rows){
-  const tbl  = document.getElementById("month-table");
-  if (!tbl) return; // table not on this page
-  const tbody = tbl.querySelector("tbody") || tbl.appendChild(document.createElement("tbody"));
-  const arr = Array.isArray(rows) ? rows.slice() : [];
+  const tbody = document.querySelector('#month-table tbody');
+  if(!tbody) return;
+  tbody.innerHTML = "";
 
-  // sort according to global state
-  const { key, dir } = monthTableSort || { key: "ym", dir: "asc" };
-  const mul = dir === "desc" ? -1 : 1;
-  arr.sort((a,b)=>{
-    const ax = (key==="ym") ? String(a.ym||"") : Number(a[key]||0);
-    const bx = (key==="ym") ? String(b.ym||"") : Number(b[key]||0);
-    if (key==="ym") return mul * ax.localeCompare(bx, undefined, { numeric:true, sensitivity:"base" });
-    return mul * (ax - bx);
+  // Sort by current key/dir
+  const key = monthTableSort.key;
+  const dir = monthTableSort.dir === "asc" ? 1 : -1;
+  const sorted = [...(rows||[])].sort((a,b)=>{
+    if (key === "ym") return (a.ym > b.ym ? 1 : -1) * dir;
+    if (key === "invoices") return (a.invoices - b.invoices) * dir;
+    if (key === "qty") return (a.qty - b.qty) * dir;
+    if (key === "turnover") return (a.turnover - b.turnover) * dir;
+    if (key === "avg") return (a.avg - b.avg) * dir;
+    return 0;
   });
 
-  // build rows
-  let html = "";
-  for (const r of arr){
-    html += `
-      <tr>
-        <td>${esc(r.ym || "—")}</td>
-        <td class="num">${fmtInt(r.invoices || 0)}</td>
-        <td class="num">${fmtInt(r.qty || 0)}</td>
-        <td class="num">${fmtUSD(r.turnover || 0)}</td>
-        <td class="num">${fmtUSD(r.avg || 0)}</td>
-      </tr>`;
-  }
-  tbody.innerHTML = html;
+  sorted.forEach(r=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${esc(ymLabel(r.ym))}</td>
+      <td>${fmtInt(r.invoices)}</td>
+      <td>${fmtInt(r.qty)}</td>
+      <td>${fmtUSD(r.turnover)}</td>
+      <td>${fmtUSD(r.avg)}</td>
 
-  // remember latest data for re-sorts
-  window.__lastMonthRows = rows || [];
+    `;
+    tbody.appendChild(tr);
+  });
 }
-
 function updateMonthTableArrows(){
-  const thead = document.querySelector("#month-table thead");
-  if (!thead) return;
-  const { key, dir } = monthTableSort || { key:"ym", dir:"asc" };
+  const heads = document.querySelectorAll("#month-table thead th");
   const keys = ["ym","invoices","qty","turnover","avg"];
-  const ths = [...thead.querySelectorAll("th")];
 
-  ths.forEach((th, i)=>{
-    // clear previous arrow
-    th.querySelector(".arrow")?.remove();
-    // add current
-    if (keys[i] === key){
-      const span = document.createElement("span");
-      span.className = "arrow";
-      span.style.marginLeft = "6px";
-      span.textContent = dir === "asc" ? "▲" : "▼";
-      th.appendChild(span);
+  heads.forEach((th, idx)=>{
+    const k = keys[idx];
+
+    // Remove old arrows
+    const base = th.textContent.replace(/[\u25B2\u25BC\u2195]$/,"").trim();
+
+    let arrow = " ↕"; // neutral arrow
+    if (monthTableSort.key === k) {
+      arrow = monthTableSort.dir === "asc" ? " ▲" : " ▼";
     }
+
+    th.textContent = base + arrow;
   });
 }
 
@@ -610,138 +583,6 @@ function buildInvoiceViews(rows){
   return { invoiceList, itemsByInvoice };
 }
 
-/* ---------------- Item Finder (by code or description) --------------- */
-// Build results for a search query over the FULL dataset (ignores filters)
-function findItemSales(q, all){
-  const needle = String(q||"").trim().toLowerCase();
-  if (!needle) return [];
-
-  // match on code (robust key) or description
-  const rows = (all||[]).filter(r=>{
-    const code = String(r.code||"").toLowerCase();
-    const desc = String(r.desc||"").toLowerCase();
-    return code.includes(needle) || desc.includes(needle);
-  });
-
-  // shape: array of { client, phone, invoice, date, code, desc, qty, unit, line }
-  return rows.map(r=>{
-    const qty  = Number(r.qty||0);
-    const unit = Number(r.unit||0);
-    const line = Number(r.line||qty*unit||0);
-    const date = r.invDate || r.dateFile || null;
-    return {
-      client: r.client || r.phone || "—",
-      phone:  r.phone  || "",
-      invoice: r.invoiceName || r.invoiceFile || r.invoice || "",
-      date,
-      code: String(r.code||""),
-      desc: r.desc || "",
-      qty, unit, line
-    };
-  });
-}
-
-// Render grouped: Client → invoices → item lines
-function renderItemResults(hits){
-  const wrap = document.getElementById("item-results");
-  if (!wrap) return;
-
-  if (!hits.length) {
-    wrap.innerHTML = `<div class="muted" style="padding:10px">No matches.</div>`;
-    return;
-  }
-
-  // group by client
-  const byClient = new Map();
-  for (const h of hits){
-    const key = h.client || "—";
-    if (!byClient.has(key)) byClient.set(key, []);
-    byClient.get(key).push(h);
-  }
-
-  // sort clients by total value desc
-  const clients = Array.from(byClient, ([client, arr])=>{
-    const total = arr.reduce((s,x)=>s + (x.line||0), 0);
-    return { client, rows: arr, total };
-  }).sort((a,b)=>b.total - a.total);
-
-  // build HTML
-  let out = "";
-  for (const c of clients){
-    const title  = esc(c.client || "—");
-    const totalS = fmtUSD(c.total);
-
-    // group inside by invoice
-    const invMap = new Map();
-    for (const r of c.rows){
-      const inv = r.invoice || "—";
-      if (!invMap.has(inv)) invMap.set(inv, []);
-      invMap.get(inv).push(r);
-    }
-
-    // Invoice list
-    const invHTML = Array.from(invMap, ([inv, arr])=>{
-      const invTotal = arr.reduce((s,x)=>s+(x.line||0),0);
-      const d0 = arr[0]?.date;
-      const d  = (d0 instanceof Date) ? d0 : parseDateAny(d0);
-      const ds = d ? fmtDate(d) : "—";
-      const itemsHTML = arr.map(x=>{
-        return `
-          <li class="inv-item">
-            ${imgHTML(x.code, x.code)}
-            <div class="grow">
-              <div class="title">
-                <strong>${esc(x.code)}</strong>
-                <span class="chip" style="margin-left:6px">Qty ${fmtInt(x.qty)}</span>
-              </div>
-              <div class="desc-line">${esc(x.desc || "")}</div>
-              <div class="price-line">Unit: <strong>${fmtUSD(x.unit)}</strong> — Line: <strong>${fmtUSD(x.line)}</strong></div>
-            </div>
-          </li>`;
-      }).join("");
-
-      return `
-        <div class="inv-row" style="display:flex;align-items:center;justify-content:space-between;padding:6px 0">
-          <div><strong>${esc(inv)}</strong> <span class="tiny" style="margin-left:6px">(${ds})</span></div>
-          <div class="chip">${fmtUSD(invTotal)}</div>
-        </div>
-        <ul class="list" style="padding-left:4px">${itemsHTML}</ul>`;
-    }).join("");
-
-    out += `
-      <div class="li" style="display:block">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-          <div class="name">${title}</div>
-          <div class="value">${totalS}</div>
-        </div>
-        ${invHTML}
-      </div>`;
-  }
-
-  wrap.innerHTML = out;
-}
-
-// exposed runner so other parts (e.g., Best Sellers) can trigger it
-function runItemSearch(q){
-  const all = window.__currentAll || [];
-  const hits = findItemSales(q, all);
-  renderItemResults(hits);
-}
-
-// wire input box: on input (debounced) + Enter
-function wireItemSearch(){
-  const box = document.getElementById("item-q");
-  if (!box || box._wired) return;
-  box._wired = true;
-
-  const doSearch = ()=> runItemSearch(box.value);
-  const deb = debounce(doSearch, 250);
-
-  box.addEventListener("input", deb);
-  box.addEventListener("keydown", (e)=>{
-    if (e.key === "Enter") { e.preventDefault(); doSearch(); }
-  });
-}
 
 /* -------------------- main ---------------------- */
 async function main(){
@@ -757,7 +598,6 @@ async function main(){
     renderLatestDiagnostics(all);
 
     const state = { clientsA:"value", clientsB:"value", suppliers:"value", items:"value" };
-    wireItemSearch();
 
     function recomputeAndRender(){
       const filtered = applyFilters(all);
@@ -787,10 +627,13 @@ window.__currentAll = all;
       renderBestItems(document.getElementById("list-items"),
         state.items==="value" ? agg.bestVal : agg.bestQty, state.items);
 
-// Per-Month Sales table
+        // Per Month Sales table
+window.__lastMonthRows = agg.monthRows;
 renderMonthTable(agg.monthRows);
-updateMonthTableArrows();
 
+      // Per Month Sales table
+      renderMonthTable(agg.monthRows);
+      
     }
 
     /* -------------------- refresh wiring ---------------------- */
